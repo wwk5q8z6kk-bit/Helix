@@ -1,0 +1,45 @@
+[package]
+name = "hx-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Helix CLI — unified AI platform for humans and AI agents"
+repository.workspace = true
+
+[features]
+default = []
+local-embeddings = ["hx-engine/local-embeddings", "hx-server/local-embeddings", "hx-mcp/local-embeddings"]
+
+[[bin]]
+name = "hx"
+path = "src/main.rs"
+
+[dependencies]
+hx-core = { workspace = true }
+hx-engine = { workspace = true }
+hx-mcp = { workspace = true }
+hx-server = { workspace = true }
+hx-storage = { workspace = true }
+clap = { workspace = true }
+figment = { workspace = true }
+toml = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+rusqlite = { workspace = true }
+base64 = { workspace = true }
+rand = { workspace = true }
+tar = "0.4"
+flate2 = "1"
+walkdir = "2"
+
+[target.'cfg(unix)'.dependencies]
+termios = "0.3"

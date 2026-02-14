@@ -1,0 +1,23 @@
+[package]
+name = "hx-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core types, traits, and credential store for Helix"
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+async-trait = { workspace = true }
+keyring = { version = "3.6", features = ["apple-native", "windows-native"] }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }

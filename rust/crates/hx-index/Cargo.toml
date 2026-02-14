@@ -1,0 +1,23 @@
+[package]
+name = "hx-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Tantivy full-text search index for Helix"
+repository.workspace = true
+
+[dependencies]
+hx-core = { workspace = true }
+hx-storage = { workspace = true }
+tantivy = { workspace = true }
+serde = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

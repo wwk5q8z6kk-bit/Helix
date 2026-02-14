@@ -1,0 +1,228 @@
+[server]
+bind_host = "127.0.0.1"
+rest_port = 9470
+grpc_port = 50051
+socket_path = "~/.helix/helix.sock"
+cors_allowed_origins = []
+
+[storage]
+data_dir = "~/.helix/data"
+sqlite_path = "~/.helix/data/helix.sqlite"
+lancedb_path = "~/.helix/data/lancedb"
+tantivy_path = "~/.helix/data/tantivy"
+blobs_path = "~/.helix/data/blobs"
+
+[profile]
+display_name = "Helix Owner"
+primary_email = ""
+timezone = "UTC"
+signature = ""
+
+[email]
+enabled = false
+namespace = "default"
+poll_interval_secs = 120
+max_fetch = 20
+max_attachment_bytes = 5242880
+mark_seen = false
+imap_host = ""
+imap_port = 993
+imap_username = ""
+imap_folder = "INBOX"
+imap_starttls = true
+smtp_host = ""
+smtp_port = 587
+smtp_username = ""
+smtp_from = ""
+smtp_starttls = true
+# Passwords should be set via secrets:
+# helix secret set HELIX_EMAIL_IMAP_PASSWORD
+# helix secret set HELIX_EMAIL_SMTP_PASSWORD
+
+[google_calendar]
+enabled = false
+namespace = "default"
+calendar_id = "primary"
+sync_interval_secs = 900
+lookback_days = 30
+lookahead_days = 90
+max_results = 250
+import_events = true
+export_events = false
+# OAuth2 credentials should be provided via environment variables:
+# - HELIX_GOOGLE_CALENDAR_CLIENT_ID
+# - HELIX_GOOGLE_CALENDAR_CLIENT_SECRET
+# - HELIX_GOOGLE_CALENDAR_REFRESH_TOKEN
+# Optionally override:
+# - HELIX_GOOGLE_CALENDAR_ENABLED
+# - HELIX_GOOGLE_CALENDAR_NAMESPACE
+# - HELIX_GOOGLE_CALENDAR_CALENDAR_ID
+# - HELIX_GOOGLE_CALENDAR_SYNC_INTERVAL_SECS
+# - HELIX_GOOGLE_CALENDAR_LOOKBACK_DAYS
+# - HELIX_GOOGLE_CALENDAR_LOOKAHEAD_DAYS
+# - HELIX_GOOGLE_CALENDAR_MAX_RESULTS
+# - HELIX_GOOGLE_CALENDAR_IMPORT_EVENTS
+# - HELIX_GOOGLE_CALENDAR_EXPORT_EVENTS
+
+[embedding]
+provider = "local_fastembed"
+model = "bge-small-en-v1.5"
+dimensions = 384
+# local provider options:
+# - provider = "local_fastembed"
+# - model = "bge-small-en-v1.5" (or "all-minilm-l6-v2")
+# - build with cargo feature: --features local-embeddings
+#
+# openai provider options:
+# - provider = "openai"
+# - model = "text-embedding-3-small"
+# - dimensions = 1536
+# - api_key loaded from OPENAI_API_KEY env var
+
+[llm]
+enabled = false
+auto_detect = true
+base_url = "http://localhost:11434/v1"
+model = "llama3.2"
+max_tokens = 512
+temperature = 0.3
+timeout_secs = 30
+
+[ai_sidecar]
+enabled = false
+base_url = "http://127.0.0.1:8100"
+timeout_secs = 30
+
+[watcher]
+enabled = true
+interval_secs = 300
+lookback_hours = 24
+max_nodes_per_cycle = 50
+expiry_days = 7
+
+[search]
+default_limit = 10
+default_strategy = "hybrid"
+min_score = 0.1
+vector_weight = 0.6
+fulltext_weight = 0.4
+
+[graph]
+default_traversal_depth = 2
+graph_boost_factor = 0.15
+
+[ai]
+auto_tagging_enabled = false
+auto_tagging_max_generated_tags = 6
+auto_tagging_max_total_tags = 12
+auto_tagging_similarity_seed_limit = 8
+auto_tagging_min_token_length = 4
+# Env overrides:
+# - HELIX_AI_AUTO_TAGGING_ENABLED
+# - HELIX_AI_AUTO_TAGGING_MAX_GENERATED_TAGS
+# - HELIX_AI_AUTO_TAGGING_MAX_TOTAL_TAGS
+# - HELIX_AI_AUTO_TAGGING_SIMILARITY_SEED_LIMIT
+# - HELIX_AI_AUTO_TAGGING_MIN_TOKEN_LENGTH
+
+[linking]
+auto_backlinks_enabled = true
+auto_backlinks_scan_limit = 5000
+auto_backlinks_max_targets = 64
+# Env overrides:
+# - HELIX_LINKING_AUTO_BACKLINKS_ENABLED
+# - HELIX_LINKING_AUTO_BACKLINKS_SCAN_LIMIT
+# - HELIX_LINKING_AUTO_BACKLINKS_MAX_TARGETS
+
+[daily_notes]
+enabled = true
+midnight_scheduler_enabled = true
+namespace = "journal"
+title_template = "Daily Note {{date}}"
+content_template = """
+## Top Priorities
+- [ ] 
+
+## Schedule
+- Morning:
+- Afternoon:
+- Evening:
+
+## Notes
+
+## Wins
+- 
+
+## Blockers
+- 
+
+## Follow-up
+- 
+"""
+default_importance = 0.6
+# Env overrides:
+# - HELIX_DAILY_NOTES_ENABLED
+# - HELIX_DAILY_NOTES_MIDNIGHT_SCHEDULER_ENABLED
+# - HELIX_DAILY_NOTES_NAMESPACE
+# - HELIX_DAILY_NOTES_TITLE_TEMPLATE
+# - HELIX_DAILY_NOTES_CONTENT_TEMPLATE
+# - HELIX_DAILY_NOTES_DEFAULT_IMPORTANCE
+
+[recurrence]
+enabled = true
+scheduler_interval_secs = 300
+max_instances_per_template = 8
+# Env overrides:
+# - HELIX_RECURRENCE_ENABLED
+# - HELIX_RECURRENCE_SCHEDULER_INTERVAL_SECS
+# - HELIX_RECURRENCE_MAX_INSTANCES_PER_TEMPLATE
+
+[encryption]
+enabled = false
+argon2_memory_kib = 65536
+argon2_iterations = 3
+argon2_parallelism = 4
+# Env overrides:
+# - HELIX_ENCRYPTION_ENABLED
+# - HELIX_ENCRYPTION_ARGON2_MEMORY_KIB
+# - HELIX_ENCRYPTION_ARGON2_ITERATIONS
+# - HELIX_ENCRYPTION_ARGON2_PARALLELISM
+
+[lifecycle]
+importance_decay_rate = 0.01
+min_importance = 0.05
+consolidation_interval_hours = 24
+
+[auth]
+enabled = false
+# Runtime auth configuration is environment-driven:
+# - HELIX_AUTH_TOKEN (shared bearer token)
+# - HELIX_AUTH_ROLE (admin|write|read, optional)
+# - HELIX_AUTH_NAMESPACE (namespace scope for shared token, optional)
+# - HELIX_JWT_SECRET (HS256 JWT secret, optional)
+# - HELIX_ALLOW_INSECURE_BIND (set true to allow non-local bind without auth)
+# - HELIX_RATE_LIMIT_REQUESTS (requests per window, default 120; 0 disables)
+# - HELIX_RATE_LIMIT_WINDOW_SECS (window size, default 60)
+# - HELIX_NAMESPACE_NODE_QUOTA (max nodes per namespace, optional)
+
+[python_ai]
+host = "127.0.0.1"
+port = 8200
+workers = 2
+log_level = "info"
+
+[python_ai.llm_router]
+default_provider = "auto"
+budget_limit = 100.0
+budget_period = "monthly"
+
+[python_ai.oauth]
+callback_port = 18800
+# Set OAuth credentials via env:
+# ANTHROPIC_OAUTH_CLIENT_ID / ANTHROPIC_OAUTH_CLIENT_SECRET
+# OPENAI_OAUTH_CLIENT_ID / OPENAI_OAUTH_CLIENT_SECRET
+# GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET
+
+[logging]
+level = "info"
+format = "pretty"
+log_dir = "~/.helix/logs"

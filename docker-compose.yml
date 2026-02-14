@@ -1,0 +1,24 @@
+services:
+  helix-rust:
+    build:
+      context: ./rust
+      dockerfile: Dockerfile
+    ports:
+      - "9470:9470"
+      - "50051:50051"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9470/health"]
+      interval: 10s
+      retries: 3
+
+  helix-python:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    ports:
+      - "8200:8200"
+    depends_on:
+      helix-rust:
+        condition: service_healthy
+    environment:
+      - HELIX_RUST_URL=http://helix-rust:9470

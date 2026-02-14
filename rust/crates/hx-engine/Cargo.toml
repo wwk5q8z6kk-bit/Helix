@@ -1,0 +1,61 @@
+[package]
+name = "hx-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Orchestration engine combining all Helix backends"
+repository.workspace = true
+
+[features]
+default = ["local-embeddings"]
+local-embeddings = ["hx-storage/local-embeddings"]
+image-embeddings = ["dep:fastembed"]
+local-llm = ["dep:llama-cpp-2"]
+wip = []
+
+[dependencies]
+hx-core = { workspace = true }
+hx-storage = { workspace = true }
+hx-index = { workspace = true }
+hx-graph = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+rusqlite = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+futures = { workspace = true }
+rand = { workspace = true }
+base64 = { workspace = true }
+sha2 = { workspace = true }
+hkdf = { workspace = true }
+hmac = { workspace = true }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+zeroize = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+libc = { workspace = true }
+regex = "1"
+once_cell = "1"
+walkdir = "2"
+fastembed = { version = "5.8", optional = true, default-features = false, features = ["hf-hub-native-tls", "ort-load-dynamic", "image-models"] }
+llama-cpp-2 = { version = "0.1", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"
+core-foundation = "0.10"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["async_tokio"] }
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }
+mockito = "1.7"
+
+[[bench]]
+name = "engine_bench"
+harness = false

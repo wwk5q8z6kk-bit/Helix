@@ -1,0 +1,60 @@
+[package]
+name = "hx-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Axum REST + tonic gRPC server for Helix"
+repository.workspace = true
+
+[features]
+default = ["local-embeddings", "image-embeddings"]
+local-embeddings = ["hx-engine/local-embeddings"]
+local-llm = ["hx-engine/local-llm"]
+image-embeddings = ["hx-engine/image-embeddings"]
+wip = ["hx-engine/wip"]
+
+[dependencies]
+hx-core = { workspace = true }
+hx-engine = { workspace = true }
+hx-storage = { workspace = true }
+hx-plugin = { workspace = true }
+axum = { workspace = true }
+tonic = { workspace = true }
+prost = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+jsonwebtoken = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+futures = { workspace = true }
+bytes = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+async-stream = "0.3"
+utoipa = { workspace = true }
+utoipa-swagger-ui = { workspace = true }
+base64 = { workspace = true }
+toml = { workspace = true }
+rand = { workspace = true }
+serde_urlencoded = "0.7"
+imap = "2.4"
+native-tls = "0.2"
+mailparse = "0.15"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
+
+[build-dependencies]
+tonic-build = "0.12"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
+tempfile = "3"

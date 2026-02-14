@@ -1,0 +1,23 @@
+[package]
+name = "hx-mcp"
+version.workspace = true
+edition.workspace = true
+
+[features]
+default = []
+local-embeddings = ["hx-engine/local-embeddings"]
+
+[dependencies]
+hx-core = { workspace = true }
+hx-engine = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["test-util"] }

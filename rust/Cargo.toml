@@ -1,0 +1,125 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/hx-core",
+    "crates/hx-storage",
+    "crates/hx-index",
+    "crates/hx-graph",
+    "crates/hx-engine",
+    "crates/hx-server",
+    "crates/hx-mcp",
+    "crates/hx-cli",
+    "crates/hx-plugin",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Helix Contributors"]
+description = "Helix — unified AI platform with Rust core and Python AI"
+homepage = "https://github.com/nicholasgasior/helix"
+repository = "https://github.com/nicholasgasior/helix"
+categories = ["database", "command-line-utilities"]
+keywords = ["knowledge-graph", "memory", "local-first", "ai", "platform"]
+
+[workspace.dependencies]
+# Internal crates
+hx-core = { path = "crates/hx-core" }
+hx-storage = { path = "crates/hx-storage" }
+hx-index = { path = "crates/hx-index" }
+hx-graph = { path = "crates/hx-graph" }
+hx-engine = { path = "crates/hx-engine" }
+hx-server = { path = "crates/hx-server" }
+hx-mcp = { path = "crates/hx-mcp" }
+hx-plugin = { path = "crates/hx-plugin" }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Web / API
+axum = { version = "0.7", features = ["ws", "multipart"] }
+tonic = "0.12"
+prost = "0.13"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "trace"] }
+hyper = "1"
+hyper-util = { version = "0.1", features = ["tokio"] }
+
+# Storage
+rusqlite = { version = "0.31", features = ["bundled", "vtab"] }
+lancedb = "0.13"
+arrow-array = "52"
+arrow-schema = "52"
+
+# Search
+tantivy = "0.22"
+
+# Graph
+petgraph = "0.6"
+
+# IDs & time
+uuid = { version = "1", features = ["v5", "v7", "serde", "std"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Config
+figment = { version = "0.10", features = ["toml", "env"] }
+toml = "0.8"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Auth
+jsonwebtoken = "9"
+
+# HTTP client (for embeddings API)
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+
+# System / low-level
+libc = "0.2"
+
+# URL parsing
+url = "2"
+
+# Misc
+async-trait = "0.1"
+futures = "0.3"
+bytes = "1"
+tokio-stream = "0.1"
+
+# OpenAPI
+utoipa = { version = "5", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8", features = ["axum"] }
+
+# Secret sharing
+sharks = "0.5"
+
+# Encryption
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+base64 = "0.22"
+hkdf = "0.12"
+hmac = "0.12"
+sha2 = "0.10"
+
+# WASM plugin runtime
+wasmtime = "27"
+wasmtime-wasi = "27"
+
+[profile.release]
+lto = "thin"
+strip = true

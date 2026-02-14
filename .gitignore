@@ -1,0 +1,28 @@
+# OS
+.DS_Store
+
+# Rust
+rust/target/
+rust/target-*/
+
+# Python
+python/.venv/
+python/__pycache__/
+python/**/__pycache__/
+python/*.egg-info/
+python/**/*.egg-info/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+
+# Data
+*.db
+*.lance/
