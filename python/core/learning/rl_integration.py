@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from collections import defaultdict
 import random
@@ -34,7 +34,7 @@ class QValue:
         # Incremental Q-value update
         alpha = 1.0 / self.visit_count  # Learning rate
         self.value = self.value + alpha * (new_value - self.value)
-        self.last_updated = datetime.utcnow()
+        self.last_updated = datetime.now(tz=timezone.utc)
 
 
 @dataclass

@@ -23,7 +23,7 @@ import logging
 import traceback
 import uuid
 from dataclasses import dataclass, field, asdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional, Union
 from functools import wraps
@@ -75,7 +75,7 @@ class CircuitBreakerState(Enum):
 class ErrorContext:
     """Rich error context with metadata."""
     error_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     severity: ErrorSeverity = ErrorSeverity.ERROR
     category: ErrorCategory = ErrorCategory.INTERNAL
     message: str = ""
@@ -688,7 +688,7 @@ class CircuitBreaker:
         self.config = config or CircuitBreakerConfig()
         self.state = CircuitBreakerState.CLOSED
         self.metrics = CircuitBreakerMetrics()
-        self.last_state_change = datetime.utcnow()
+        self.last_state_change = datetime.now(tz=timezone.utc)
 
     def record_success(self) -> None:
         """Record successful request."""
@@ -703,7 +703,7 @@ class CircuitBreaker:
         """Record failed request."""
         self.metrics.failed_requests += 1
         self.metrics.total_requests += 1
-        self.metrics.last_failure_time = datetime.utcnow()
+        self.metrics.last_failure_time = datetime.now(tz=timezone.utc)
 
         if self.state == CircuitBreakerState.CLOSED:
             if self.metrics.failed_requests >= self.config.failure_threshold:
@@ -721,7 +721,7 @@ class CircuitBreaker:
 
         if self.state == CircuitBreakerState.OPEN:
             # Check if recovery timeout has passed
-            time_since_open = datetime.utcnow() - self.last_state_change
+            time_since_open = datetime.now(tz=timezone.utc) - self.last_state_change
             if time_since_open.total_seconds() > self.config.recovery_timeout_sec:
                 self._half_open()
                 return True
@@ -733,21 +733,21 @@ class CircuitBreaker:
     def _open(self) -> None:
         """Open circuit breaker."""
         self.state = CircuitBreakerState.OPEN
-        self.last_state_change = datetime.utcnow()
+        self.last_state_change = datetime.now(tz=timezone.utc)
         self.metrics.failed_requests = 0
         logger.warning(f"Circuit breaker '{self.name}' opened")
 
     def _close(self) -> None:
         """Close circuit breaker."""
         self.state = CircuitBreakerState.CLOSED
-        self.last_state_change = datetime.utcnow()
+        self.last_state_change = datetime.now(tz=timezone.utc)
         self.metrics = CircuitBreakerMetrics()
         logger.info(f"Circuit breaker '{self.name}' closed")
 
     def _half_open(self) -> None:
         """Set circuit breaker to half-open."""
         self.state = CircuitBreakerState.HALF_OPEN
-        self.last_state_change = datetime.utcnow()
+        self.last_state_change = datetime.now(tz=timezone.utc)
         self.metrics.successful_requests = 0
         logger.info(f"Circuit breaker '{self.name}' half-open (testing recovery)")
 

@@ -280,13 +280,13 @@ async def router_stats():
 async def board():
     """System dashboard — aggregates service state, provider stats, and recent events."""
     from core.observability.tower_log import TowerLogHandler
-    from datetime import datetime
+    from datetime import datetime, timezone
 
     container = get_container()
 
     result: Dict[str, Any] = {
         "services": container.status(),
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
     }
 
     # Provider stats (safe access)

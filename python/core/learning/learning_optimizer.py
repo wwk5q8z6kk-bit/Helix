@@ -3,7 +3,7 @@
 import logging
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from collections import defaultdict
 import json
@@ -50,7 +50,7 @@ class AgentPerformance:
             alpha * quality + (1 - alpha) * self.quality_score
         )
 
-        self.last_updated = datetime.utcnow()
+        self.last_updated = datetime.now(tz=timezone.utc)
 
     def success_rate(self) -> float:
         """Calculate success rate."""
@@ -118,7 +118,7 @@ class LearningSession:
         collaboration_metrics: Optional[Dict[str, float]] = None,
     ) -> None:
         """Mark session as complete."""
-        self.end_time = datetime.utcnow()
+        self.end_time = datetime.now(tz=timezone.utc)
         self.success = success
         self.output_quality = quality
         self.collaboration_metrics = collaboration_metrics or {}
@@ -251,7 +251,7 @@ class LearningOptimizer:
             session_id=session_id,
             task_description=task_description,
             agents_involved=agents,
-            start_time=datetime.utcnow(),
+            start_time=datetime.now(tz=timezone.utc),
         )
         self.sessions[session_id] = session
         logger.info(
@@ -452,7 +452,7 @@ class LearningOptimizer:
     def export_learning_state(self) -> str:
         """Export learning state as JSON."""
         state = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(tz=timezone.utc).isoformat(),
             "statistics": self.get_learning_statistics(),
             "agents": {
                 agent_id: learning.to_dict()
