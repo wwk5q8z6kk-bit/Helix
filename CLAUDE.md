@@ -33,7 +33,7 @@ helix/
     │   ├── observability/            # Tower structured logging (JSONL)
     │   ├── mcp/                      # MCP stdio server (7 tools)
     │   └── middleware/               # Request ID, rate limiting, security headers
-    ├── tests/                        # pytest (74 tests)
+    ├── tests/                        # pytest (118 tests)
     └── scripts/                      # start.sh, stop.sh
 ```
 
@@ -51,7 +51,7 @@ cd rust && cargo build --release
 cd python
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
-pytest                    # 74 tests
+pytest                    # 118 tests
 python -m uvicorn core.api.helix_api:app --port 8200
 ```
 
@@ -71,9 +71,11 @@ python -m uvicorn core.api.helix_api:app --port 8200
 - **Feedback Handler**: `python/core/feedback/feedback_handler.py` — quality feedback → learning optimizer
 
 ## API Endpoints
-- `GET /health` — health check (Rust core + Python)
+- `GET /health` — health check (200 healthy, 503 degraded if Rust core down)
 - `POST /api/generate` — LLM generation via router
 - `POST /api/search` — semantic search via Rust core
+- `POST /api/reason` — multi-step agentic reasoning
+- `POST /api/swarm/execute` — specialized swarm execution
 - `GET /api/stats` — system statistics
 - `POST /api/event` — external event ingestion (→ EventRouter)
 - `GET /tower` — recent tower events (ring buffer)
@@ -88,18 +90,25 @@ python -m uvicorn core.api.helix_api:app --port 8200
 - `XAI_API_KEY` — Grok models
 - `DEEPSEEK_API_KEY` — DeepSeek models
 - `HELIX_HOME` — data directory (default: `~/.helix`)
+- `HELIX_ENV` — environment (`development` allows `*` CORS; production restricts origins)
+- `HELIX_CORS_ORIGINS` — comma-separated allowed origins (overrides default)
+- `HELIX_RUST_URL` — Rust core URL (default: `http://127.0.0.1:9470`)
 
 ## Testing
 ```bash
 cd python && source .venv/bin/activate
-pytest -v              # All 74 tests
+pytest -v              # All 118 tests
 pytest tests/test_helix_api.py        # API endpoint tests (14)
 pytest tests/test_llm_router.py       # Router selection tests (12)
-pytest tests/test_rust_bridge.py      # Bridge mock tests (10)
+pytest tests/test_rust_bridge.py      # Bridge mock tests (11)
 pytest tests/test_di_and_event_bus.py # DI + event bus tests (12)
 pytest tests/test_event_router.py     # Event routing tests (9)
 pytest tests/test_tower.py            # Tower logging tests (11)
 pytest tests/test_feedback.py         # Feedback loop tests (6)
+pytest tests/test_swarms.py           # Swarm routing tests (11)
+pytest tests/test_reasoning.py        # Reasoning engine tests (11)
+pytest tests/test_mcp.py              # MCP tool dispatch tests (10)
+pytest tests/test_integration.py      # Integration tests (12)
 ```
 
 ```bash
@@ -123,3 +132,6 @@ cargo test --lib -p hx-cli            # CLI tests
 - `scripts/stop.sh` — stops both services
 - `.github/workflows/ci.yml` — Python pytest + Rust check/test
 - `docker-compose.yml` — helix-rust (:9470) + helix-python (:8200)
+- `rust/Dockerfile` — multi-stage Rust build (builder → slim runtime)
+- `python/Dockerfile` — Python 3.12-slim + uv for fast installs
+- `.env.example` — template for all environment variables

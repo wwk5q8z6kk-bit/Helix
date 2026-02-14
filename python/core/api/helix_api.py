@@ -16,8 +16,11 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
@@ -101,9 +104,19 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+def _cors_origins() -> list[str]:
+    env = os.environ.get("HELIX_ENV", "development")
+    raw = os.environ.get("HELIX_CORS_ORIGINS", "")
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    if env == "development":
+        return ["*"]
+    return ["http://localhost:3000", "http://localhost:8200"]
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -126,11 +139,15 @@ async def health():
     """Health check — reports Python AI and Rust core status."""
     container = get_container()
     rust_ok = await container.bridge.is_healthy()
-    return {
-        "status": "healthy",
+    status = "healthy" if rust_ok else "degraded"
+    body = {
+        "status": status,
         "python_ai": True,
         "rust_core_connected": rust_ok,
     }
+    if not rust_ok:
+        return JSONResponse(content=body, status_code=503)
+    return body
 
 
 @app.get("/api/models")
@@ -361,6 +378,57 @@ async def stream_progress(task_id: str):
     return EventSourceResponse(event_generator())
 
 
+@app.post("/api/reason")
+async def reason(req: ReasonRequest):
+    """Multi-step reasoning via the Agentic Reasoner."""
+    container = get_container()
+    reasoner = container.reasoner
+    if reasoner is None:
+        raise HTTPException(status_code=503, detail="Reasoner not available")
+
+    try:
+        reasoner.max_steps = req.max_steps
+        trajectory, reward = await reasoner.solve(problem=req.goal, initial_context=req.context)
+        return {
+            "steps": [
+                {"content": s.content, "type": s.step_type.value, "confidence": s.confidence}
+                for s in trajectory.steps
+            ],
+            "conclusion": trajectory.final_answer or "",
+            "success": trajectory.success,
+            "confidence": reward.final_score,
+        }
+    except Exception as e:
+        logger.error("Reasoning failed: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/swarm/execute")
+async def swarm_execute(req: SwarmRequest):
+    """Execute a specialized agent swarm for complex tasks."""
+    container = get_container()
+    orchestrator = container.swarm_orchestrator
+    if orchestrator is None:
+        raise HTTPException(status_code=503, detail="Swarm orchestrator not available")
+
+    try:
+        context = req.context.copy()
+        context["swarm_type"] = req.swarm_type
+        result = await orchestrator.route_and_execute(req.task, context)
+        return {
+            "status": "completed" if result.swarm_result.success else "failed",
+            "task_id": result.task_id,
+            "swarm_used": result.swarm_used,
+            "category": result.task_category.value,
+            "quality_score": result.quality_score,
+            "routing_confidence": result.routing_confidence,
+            "output": str(result.swarm_result.output),
+        }
+    except Exception as e:
+        logger.error("Swarm execution failed: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
 class FeedbackRequest(BaseModel):
     task_id: str
     score: float = Field(ge=0.0, le=1.0)
@@ -371,10 +439,8 @@ class FeedbackRequest(BaseModel):
 @app.post("/api/feedback")
 async def submit_feedback(req: FeedbackRequest):
     """Submit quality feedback for a completed task."""
-    from core.feedback.feedback_handler import FeedbackHandler
-
     container = get_container()
-    handler = FeedbackHandler(event_bus=container.event_bus)
+    handler = container.feedback_handler
     return await handler.handle_feedback(
         task_id=req.task_id,
         score=req.score,

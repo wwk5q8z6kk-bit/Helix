@@ -19,6 +19,9 @@ class HelixContainer:
         self._event_bus = None
         self._orchestrator = None
         self._learning_optimizer = None
+        self._swarm_orchestrator = None
+        self._reasoner = None
+        self._feedback_handler = None
 
     @property
     def bridge(self):
@@ -65,6 +68,36 @@ class HelixContainer:
             self._subscribe_learning_optimizer()
         return self._learning_optimizer
 
+    @property
+    def swarm_orchestrator(self):
+        if self._swarm_orchestrator is None:
+            try:
+                from core.swarms.swarm_orchestrator import SwarmOrchestrator
+                self._swarm_orchestrator = SwarmOrchestrator()
+                logger.info("SwarmOrchestrator initialized")
+            except Exception:
+                logger.exception("Failed to initialize SwarmOrchestrator")
+        return self._swarm_orchestrator
+
+    @property
+    def reasoner(self):
+        if self._reasoner is None:
+            from core.reasoning.agentic_reasoner import AgenticReasoner
+            self._reasoner = AgenticReasoner()
+            logger.info("AgenticReasoner initialized")
+        return self._reasoner
+
+    @property
+    def feedback_handler(self):
+        if self._feedback_handler is None:
+            from core.feedback.feedback_handler import FeedbackHandler
+            self._feedback_handler = FeedbackHandler(
+                event_bus=self.event_bus,
+                learning_optimizer=self.learning_optimizer,
+            )
+            logger.info("FeedbackHandler initialized")
+        return self._feedback_handler
+
     def _subscribe_learning_optimizer(self) -> None:
         """Subscribe the learning optimizer to TASK_COMPLETED events."""
         import asyncio
@@ -101,6 +134,9 @@ class HelixContainer:
             "event_bus": self._event_bus is not None,
             "orchestrator": self._orchestrator is not None,
             "learning_optimizer": self._learning_optimizer is not None,
+            "swarm_orchestrator": self._swarm_orchestrator is not None,
+            "reasoner": self._reasoner is not None,
+            "feedback_handler": self._feedback_handler is not None,
         }
 
 

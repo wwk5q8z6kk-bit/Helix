@@ -76,8 +76,10 @@ async def test_health_returns_ok(client, mock_bridge):
 async def test_health_rust_down(client, mock_bridge):
     mock_bridge.is_healthy.return_value = False
     resp = await client.get("/health")
-    assert resp.status_code == 200
-    assert resp.json()["rust_core_connected"] is False
+    assert resp.status_code == 503
+    data = resp.json()
+    assert data["status"] == "degraded"
+    assert data["rust_core_connected"] is False
 
 
 # --- Models ---

@@ -46,6 +46,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_swarm(arguments)
         elif name == "helix_review":
             result = await _handle_review(arguments)
+        elif name == "helix_reason":
+            result = await _handle_reason(arguments)
+        elif name == "helix_learn":
+            result = await _handle_learn(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
@@ -107,13 +111,23 @@ async def _handle_orchestrate(args: dict) -> dict:
 
 
 async def _handle_swarm(args: dict) -> dict:
-    """Handle helix_swarm tool — placeholder for swarm execution."""
+    """Handle helix_swarm tool — routes to SwarmOrchestrator."""
+    from core.swarms.swarm_orchestrator import get_swarm_orchestrator
+
+    orchestrator = get_swarm_orchestrator()
+    task = args["task"]
+    context = args.get("context", {})
+    context["swarm_type"] = args.get("swarm_type", "implementation")
+
+    result = await orchestrator.route_and_execute(task, context)
     return {
-        "status": "executed",
-        "swarm_type": args.get("swarm_type"),
-        "task": args.get("task"),
-        "agents": args.get("num_agents", 3),
-        "note": "Swarm execution requires running Python AI service. Use POST :8200/swarm/execute for full swarm orchestration.",
+        "status": "completed" if result.swarm_result.success else "failed",
+        "task_id": result.task_id,
+        "swarm_used": result.swarm_used,
+        "category": result.task_category.value,
+        "quality_score": result.quality_score,
+        "routing_confidence": result.routing_confidence,
+        "output": str(result.swarm_result.output),
     }
 
 
@@ -130,6 +144,60 @@ async def _handle_review(args: dict) -> dict:
     provider = await router.select_provider(TaskType.TESTING, len(prompt.split()) * 2, 9.0)
     text, metadata = await router.call_llm(provider, messages, TaskType.TESTING)
     return {"review": text, "focus": focus, **metadata}
+
+
+async def _handle_reason(args: dict) -> dict:
+    """Handle helix_reason tool — multi-step agentic reasoning."""
+    from core.reasoning.agentic_reasoner import get_agentic_reasoner
+
+    reasoner = get_agentic_reasoner()
+    goal = args["goal"]
+    max_steps = args.get("max_steps", 5)
+    context = args.get("context", {})
+
+    # AgenticReasoner uses solve() — limit steps to max_steps
+    reasoner.max_steps = max_steps
+    trajectory, reward = await reasoner.solve(problem=goal, initial_context=context)
+
+    return {
+        "steps": [
+            {"content": s.content, "type": s.step_type.value, "confidence": s.confidence}
+            for s in trajectory.steps
+        ],
+        "conclusion": trajectory.final_answer or "",
+        "success": trajectory.success,
+        "confidence": reward.final_score,
+        "steps_executed": len(trajectory.steps),
+    }
+
+
+async def _handle_learn(args: dict) -> dict:
+    """Handle helix_learn tool — query learned patterns and agent performance."""
+    from core.learning.learning_optimizer import LearningOptimizer
+
+    query = args["query"]
+    limit = args.get("limit", 5)
+
+    optimizer = LearningOptimizer()
+    stats = optimizer.get_learning_statistics()
+
+    # Filter agent stats by query relevance
+    agent_stats = stats.get("agent_statistics", [])
+    query_lower = query.lower()
+    matched = [
+        a for a in agent_stats
+        if query_lower in a.get("agent_name", "").lower()
+        or query_lower in a.get("agent_id", "").lower()
+    ]
+
+    return {
+        "query": query,
+        "patterns": matched[:limit] if matched else agent_stats[:limit],
+        "total_agents": stats.get("total_agents", 0),
+        "learning_iterations": stats.get("learning_iterations", 0),
+        "success_rate": stats.get("success_rate", 0.0),
+        "average_quality": stats.get("average_quality", 0.0),
+    }
 
 
 async def main():

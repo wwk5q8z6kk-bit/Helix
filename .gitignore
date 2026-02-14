@@ -22,6 +22,7 @@ python/**/*.egg-info/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Data
 *.db

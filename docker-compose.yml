@@ -6,6 +6,8 @@ services:
     ports:
       - "9470:9470"
       - "50051:50051"
+    env_file: .env
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9470/health"]
       interval: 10s
@@ -17,6 +19,8 @@ services:
       dockerfile: Dockerfile
     ports:
       - "8200:8200"
+    env_file: .env
+    restart: unless-stopped
     depends_on:
       helix-rust:
         condition: service_healthy

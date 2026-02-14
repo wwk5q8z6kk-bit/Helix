@@ -25,7 +25,11 @@ def test_container_status_all_uninitialized():
     from core.di_container import get_container
     container = get_container()
     s = container.status()
-    assert s == {"bridge": False, "llm_router": False, "event_bus": False, "orchestrator": False, "learning_optimizer": False}
+    assert s == {
+        "bridge": False, "llm_router": False, "event_bus": False,
+        "orchestrator": False, "learning_optimizer": False,
+        "swarm_orchestrator": False, "reasoner": False, "feedback_handler": False,
+    }
 
 
 def test_container_bridge_lazy_init():

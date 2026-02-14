@@ -13,6 +13,7 @@ from core.swarms.base_swarm import Task, SwarmResult
 from core.swarms.shared_state import get_shared_state_manager
 from core.swarms.a2a_protocol import get_a2a_protocol, MessageType
 from core.swarms.knowledge_pool import get_knowledge_pool
+from core.exceptions_unified import AgentError, TaskExecutionError
 from core.reasoning import AgenticReasoner, get_agentic_reasoner
 from core.reasoning.trajectory_tracker import get_trajectory_tracker
 from core.reasoning.process_reward_model import get_process_reward_model
