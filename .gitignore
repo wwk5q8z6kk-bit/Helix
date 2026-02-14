@@ -26,3 +26,6 @@ python/**/*.egg-info/
 # Data
 *.db
 *.lance/
+
+# Model cache
+.fastembed_cache/

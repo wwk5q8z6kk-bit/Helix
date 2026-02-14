@@ -4,17 +4,17 @@
 //! Helix's functionality. WASM runtime support is available behind the
 //! `wasm-runtime` feature flag.
 
-pub mod abi;
+pub(crate) mod abi;
 #[cfg(feature = "wasm-runtime")]
-pub mod host;
-pub mod hooks;
-pub mod manager;
-pub mod manifest;
-pub mod registry;
-pub mod runtime;
-pub mod sandbox;
+pub(crate) mod host;
+pub(crate) mod hooks;
+pub(crate) mod manager;
+pub(crate) mod manifest;
+pub(crate) mod registry;
+pub(crate) mod runtime;
+pub(crate) mod sandbox;
 #[cfg(feature = "wasm-runtime")]
-pub mod wasm_plugin;
+pub(crate) mod wasm_plugin;
 
 pub use hooks::{HookContext, HookPoint, HookResult};
 pub use manager::PluginManager;

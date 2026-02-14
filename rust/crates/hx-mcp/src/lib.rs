@@ -1,6 +1,6 @@
 pub mod auth;
-pub mod prompts;
-pub mod protocol;
-pub mod resources;
+pub(crate) mod prompts;
+pub(crate) mod protocol;
+pub(crate) mod resources;
 pub mod server;
-pub mod tools;
+pub(crate) mod tools;
