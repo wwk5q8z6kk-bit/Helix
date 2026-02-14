@@ -105,7 +105,7 @@ pytest tests/test_feedback.py         # Feedback loop tests (6)
 ```bash
 cd rust
 cargo check                           # Full workspace check
-cargo test --lib -p hx-server         # Server tests (209 pass, 7 pre-existing vault-sealed)
+cargo test --lib -p hx-server         # Server tests (216 pass)
 cargo test --lib -p hx-cli            # CLI tests
 ```
 

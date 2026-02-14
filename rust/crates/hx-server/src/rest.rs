@@ -2104,6 +2104,7 @@ fn map_hx_error(err: HxError) -> (StatusCode, String) {
         HxError::NodeNotFound(_) => (StatusCode::NOT_FOUND, err.to_string()),
         HxError::InvalidInput(_) => (StatusCode::BAD_REQUEST, err.to_string()),
         HxError::DuplicateNode(_) => (StatusCode::CONFLICT, err.to_string()),
+        HxError::VaultSealed => (StatusCode::LOCKED, err.to_string()),
         _ => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()),
     }
 }
@@ -11741,8 +11742,22 @@ mod tests {
     use hx_engine::recurrence::{
         TASK_COMPLETED_AT_METADATA_KEY, TASK_COMPLETED_METADATA_KEY, TASK_DUE_AT_METADATA_KEY,
     };
+    use hx_storage::sealed_runtime::{clear_runtime_root_key, set_sealed_mode_enabled};
+    use serial_test::serial;
     use tempfile::TempDir;
     use tower::ServiceExt;
+
+    /// Drop guard that resets process-global sealed-mode state after sealed tests.
+    /// Prevents contamination of concurrent non-sealed tests that share the same
+    /// process-global `AtomicBool` and root key `OnceLock`.
+    struct SealedModeCleanup;
+
+    impl Drop for SealedModeCleanup {
+        fn drop(&mut self) {
+            set_sealed_mode_enabled(false);
+            clear_runtime_root_key();
+        }
+    }
 
     async fn create_state_with_embedding_and_mode_and_unseal(
         provider: &str,
@@ -11820,7 +11835,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn sealed_attachment_blob_roundtrip_encrypts_at_rest() {
+        let _cleanup = SealedModeCleanup;
         let (state, _temp_dir) =
             create_state_with_embedding_and_mode("unknown-provider", "any", true).await;
         let plaintext = b"sealed attachment payload";
@@ -11838,7 +11855,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn sealed_attachment_blob_rejects_plaintext_payload() {
+        let _cleanup = SealedModeCleanup;
         let (state, _temp_dir) =
             create_state_with_embedding_and_mode("unknown-provider", "any", true).await;
 
@@ -11850,7 +11869,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn sealed_mode_router_returns_503_for_regular_routes() {
+        let _cleanup = SealedModeCleanup;
         let (state, _temp_dir) =
             create_state_with_embedding_and_mode_and_unseal("unknown-provider", "any", true, false)
                 .await;
@@ -11876,7 +11897,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn sealed_mode_router_allows_keychain_status_path_through_middleware() {
+        let _cleanup = SealedModeCleanup;
         let (state, _temp_dir) =
             create_state_with_embedding_and_mode_and_unseal("unknown-provider", "any", true, false)
                 .await;
@@ -12583,6 +12606,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn template_version_history_tracks_updates_and_restore() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let original_content = "Run {{workflow}} checklist".to_string();
@@ -13463,6 +13487,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn prioritize_tasks_handler_returns_ranked_focus_list() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let now = Utc
@@ -13813,6 +13838,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn saved_search_lifecycle_create_run_update_delete() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let matching = state
@@ -13966,6 +13992,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn saved_search_update_allows_clearing_nullable_fields() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let (_status, Json(created)) = create_saved_search(
@@ -14815,6 +14842,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn reindex_attachment_refreshes_extraction_metadata_and_chunks() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let stored = state
@@ -14935,6 +14963,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn reindex_failed_attachments_processes_mixed_statuses() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
         let stored = state
@@ -15921,6 +15950,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn saved_view_crud_round_trip() {
         let (state, _temp_dir) = create_state_with_embedding("unknown-provider", "any").await;
 

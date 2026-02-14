@@ -950,7 +950,18 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use hx_engine::engine::HelixEngine;
+    use hx_storage::sealed_runtime::{clear_runtime_root_key, set_sealed_mode_enabled};
+    use serial_test::serial;
     use tempfile::TempDir;
+
+    struct SealedModeCleanup;
+
+    impl Drop for SealedModeCleanup {
+        fn drop(&mut self) {
+            set_sealed_mode_enabled(false);
+            clear_runtime_root_key();
+        }
+    }
 
     #[test]
     fn daily_note_scheduler_respects_enabled_flags() {
@@ -1050,7 +1061,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn startup_rejects_sealed_vault_state() {
+        let _cleanup = SealedModeCleanup;
         let temp_dir = TempDir::new().expect("temp dir");
         let mut config = EngineConfig::default();
         config.data_dir = temp_dir.path().to_string_lossy().to_string();
@@ -1070,7 +1083,9 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(sealed_mode)]
     async fn startup_allows_unsealed_vault_state() {
+        let _cleanup = SealedModeCleanup;
         let temp_dir = TempDir::new().expect("temp dir");
         let mut config = EngineConfig::default();
         config.data_dir = temp_dir.path().to_string_lossy().to_string();
