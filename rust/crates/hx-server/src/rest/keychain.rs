@@ -350,22 +350,13 @@ pub async fn init_vault(
     Ok(Json(serde_json::json!({"status": "initialized"})))
 }
 
-pub async fn unseal_vault(
-    State(state): State<Arc<AppState>>,
-    Extension(auth): Extension<AuthContext>,
-    Json(body): Json<UnsealRequest>,
-) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    require_admin(&auth)?;
-    let subject = auth.subject.as_deref().unwrap_or("anonymous");
-    let method = if body.from_secure_enclave {
-        "secure_enclave"
-    } else if body.from_macos_keychain {
-        "macos_keychain"
-    } else {
-        "preferred"
-    };
-    enforce_unseal_failure_backoff(&state, subject, method).await?;
-
+/// Dispatch unseal to the appropriate engine method based on the request.
+async fn attempt_unseal_by_method(
+    state: &Arc<AppState>,
+    body: &UnsealRequest,
+    subject: &str,
+    method: &str,
+) -> Result<(), (StatusCode, String)> {
     let unseal_result: Result<(), HxError> = if body.from_secure_enclave {
         #[cfg(target_os = "macos")]
         {
@@ -374,7 +365,7 @@ pub async fn unseal_vault(
         #[cfg(not(target_os = "macos"))]
         {
             if let Err(rate_limited) = log_and_record_unseal_failure(
-                &state,
+                state,
                 subject,
                 method,
                 "secure_enclave_requires_macos",
@@ -411,27 +402,42 @@ pub async fn unseal_vault(
             if state.engine.keychain.degraded_security_mode() {
                 tracing::warn!("vault unsealed in degraded security mode (passphrase fallback)");
             }
+            Ok(())
         }
         Err(err) => {
             let reason = err.to_string();
             if let Err(rate_limited) =
-                log_and_record_unseal_failure(&state, subject, method, reason.as_str()).await
+                log_and_record_unseal_failure(state, subject, method, reason.as_str()).await
             {
                 return Err(rate_limited);
             }
-            return Err(map_keychain_error(err));
+            Err(map_keychain_error(err))
         }
     }
+}
 
+pub async fn unseal_vault(
+    State(state): State<Arc<AppState>>,
+    Extension(auth): Extension<AuthContext>,
+    Json(body): Json<UnsealRequest>,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    require_admin(&auth)?;
+    let subject = auth.subject.as_deref().unwrap_or("anonymous");
+    let method = if body.from_secure_enclave {
+        "secure_enclave"
+    } else if body.from_macos_keychain {
+        "macos_keychain"
+    } else {
+        "preferred"
+    };
+
+    enforce_unseal_failure_backoff(&state, subject, method).await?;
+    attempt_unseal_by_method(&state, &body, subject, method).await?;
     run_post_unseal_maintenance(&state, subject, method).await?;
 
     log_unseal_attempt(&state, subject, method, "success", None).await;
     tracing::info!(subject, method, "vault unsealed successfully");
-
-    // Start auto-seal timer after successful unseal
     state.engine.keychain.start_auto_seal().await;
-
-    // Reset blocked request counter now that vault is open.
     state
         .sealed_blocked_requests
         .store(0, std::sync::atomic::Ordering::Relaxed);

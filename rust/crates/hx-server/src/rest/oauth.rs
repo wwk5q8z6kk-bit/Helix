@@ -429,24 +429,25 @@ pub async fn revoke_oauth_client(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn oauth_token(
-    State(state): State<Arc<AppState>>,
-    headers: HeaderMap,
-    body: axum::body::Bytes,
-) -> Result<Json<OAuthTokenResponse>, (StatusCode, String)> {
+/// Parse a token request from either form-urlencoded or JSON body, extracting
+/// the client credentials from Basic auth header or body parameters.
+fn parse_token_request(
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Result<(OAuthTokenRequest, String, String), (StatusCode, String)> {
     let content_type = headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
 
-    let mut params: OAuthTokenRequest = if content_type.starts_with("application/x-www-form-urlencoded")
-    {
-        serde_urlencoded::from_bytes(&body)
-            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid form payload".into()))?
-    } else {
-        serde_json::from_slice(&body)
-            .map_err(|_| (StatusCode::BAD_REQUEST, "invalid json payload".into()))?
-    };
+    let mut params: OAuthTokenRequest =
+        if content_type.starts_with("application/x-www-form-urlencoded") {
+            serde_urlencoded::from_bytes(body)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid form payload".into()))?
+        } else {
+            serde_json::from_slice(body)
+                .map_err(|_| (StatusCode::BAD_REQUEST, "invalid json payload".into()))?
+        };
 
     if params.grant_type != "client_credentials" {
         return Err((
@@ -455,7 +456,7 @@ pub async fn oauth_token(
         ));
     }
 
-    let (client_id, client_secret) = if let Some((id, secret)) = extract_basic_auth(&headers) {
+    let (client_id, client_secret) = if let Some((id, secret)) = extract_basic_auth(headers) {
         (id, secret)
     } else {
         (
@@ -470,30 +471,36 @@ pub async fn oauth_token(
         )
     };
 
-    let domain_id = oauth_domain_id(&state.engine)
-        .await
-        .map_err(map_keychain_error)?;
+    Ok((params, client_id, client_secret))
+}
 
+/// Validate the client credential: lookup, expiry check, and constant-time
+/// secret comparison. Logs denial to chronicle on failure.
+async fn validate_client_credentials(
+    state: &Arc<AppState>,
+    domain_id: Uuid,
+    client_id: &str,
+    client_secret: &str,
+) -> Result<StoredCredential, (StatusCode, String)> {
     let Some((cred, plaintext)) = state
         .engine
         .keychain
-        .read_credential_by_name(domain_id, &client_id)
+        .read_credential_by_name(domain_id, client_id)
         .await
         .map_err(map_keychain_error)?
     else {
         let chronicle = ChronicleEntry::new(
             "oauth.token_denied",
-            format!("Token request denied for client '{}'", client_id),
+            format!("Token request denied for client '{client_id}'"),
         );
         let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
     };
 
-    let now = Utc::now();
-    if credential_invalid_for_token(&cred, now) {
+    if credential_invalid_for_token(&cred, Utc::now()) {
         let chronicle = ChronicleEntry::new(
             "oauth.token_denied",
-            format!("Token request denied for client '{}' (expired)", client_id),
+            format!("Token request denied for client '{client_id}' (expired)"),
         );
         let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
@@ -502,15 +509,24 @@ pub async fn oauth_token(
     let stored_secret = String::from_utf8(plaintext.to_vec())
         .map_err(|_| (StatusCode::UNAUTHORIZED, "invalid client".into()))?;
 
-    if !constant_time_eq(&stored_secret, &client_secret) {
+    if !constant_time_eq(&stored_secret, client_secret) {
         let chronicle = ChronicleEntry::new(
             "oauth.token_denied",
-            format!("Token request denied for client '{}'", client_id),
+            format!("Token request denied for client '{client_id}'"),
         );
         let _ = state.engine.log_chronicle(&chronicle).await;
         return Err((StatusCode::UNAUTHORIZED, "invalid client".into()));
     }
 
+    Ok(cred)
+}
+
+/// Issue an access token for a validated client credential.
+async fn issue_access_token(
+    state: &Arc<AppState>,
+    cred: &StoredCredential,
+    client_id: &str,
+) -> Result<(String, u64), (StatusCode, String)> {
     let template_id = cred
         .metadata
         .get(METADATA_TEMPLATE_ID)
@@ -528,7 +544,7 @@ pub async fn oauth_token(
 
     let expires_at = Utc::now() + Duration::seconds(ttl_seconds as i64);
 
-    let (access_key, token) = state
+    let (_access_key, token) = state
         .engine
         .create_access_key(
             template_id,
@@ -538,13 +554,28 @@ pub async fn oauth_token(
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
 
-    let _ = access_key;
-
     let chronicle = ChronicleEntry::new(
         "oauth.token_issued",
-        format!("Issued OAuth token for client '{}'", client_id),
+        format!("Issued OAuth token for client '{client_id}'"),
     );
     let _ = state.engine.log_chronicle(&chronicle).await;
+
+    Ok((token, ttl_seconds))
+}
+
+pub async fn oauth_token(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Result<Json<OAuthTokenResponse>, (StatusCode, String)> {
+    let (params, client_id, client_secret) = parse_token_request(&headers, &body)?;
+
+    let domain_id = oauth_domain_id(&state.engine)
+        .await
+        .map_err(map_keychain_error)?;
+
+    let cred = validate_client_credentials(&state, domain_id, &client_id, &client_secret).await?;
+    let (token, ttl_seconds) = issue_access_token(&state, &cred, &client_id).await?;
 
     Ok(Json(OAuthTokenResponse {
         access_token: token,
