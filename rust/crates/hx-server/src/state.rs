@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -43,6 +43,10 @@ pub struct AppState {
     pub rate_limiter: Arc<hx_engine::rate_limit::RateLimiter>,
     /// DAG-based scheduling service (Phase 17).
     pub scheduling: Option<hx_engine::scheduling::SchedulingService>,
+    /// Outbound webhook store (Phase 18).
+    pub outbound_webhook_store: Arc<hx_engine::notifications::outbound::OutboundWebhookStore>,
+    /// Installed plugin IDs (Phase 18).
+    pub installed_plugins: Arc<RwLock<HashSet<String>>>,
 }
 
 /// Notification for task reminders.
@@ -203,6 +207,10 @@ impl AppState {
             notification_router: Arc::new(notification_router),
             rate_limiter: Arc::new(hx_engine::rate_limit::RateLimiter::new()),
             scheduling: Some(hx_engine::scheduling::SchedulingService::new()),
+            outbound_webhook_store: Arc::new(
+                hx_engine::notifications::outbound::OutboundWebhookStore::new(),
+            ),
+            installed_plugins: Arc::new(RwLock::new(HashSet::new())),
         }
     }
 
