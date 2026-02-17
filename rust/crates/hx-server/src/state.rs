@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
@@ -6,7 +7,8 @@ use chrono::{DateTime, Utc};
 use hx_engine::engine::HelixEngine;
 use hx_plugin::{PluginManager, PluginRegistry, PluginRuntime};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{broadcast, RwLock};
+use tokio::sync::{broadcast, Mutex, RwLock};
+use uuid::Uuid;
 
 pub use hx_core::ChangeNotification;
 use hx_core::{CapturedIntent, ChronicleEntry, ProactiveInsight};
@@ -25,6 +27,22 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     /// Counter: requests rejected by sealed-mode middleware.
     pub sealed_blocked_requests: AtomicU64,
+    /// In-memory store for gateway pairing sessions.
+    pub pairing_store: Arc<Mutex<HashMap<Uuid, hx_core::model::pairing::PairingSession>>>,
+    /// Source connector registry (Phase 11).
+    pub source_registry: Arc<hx_engine::sources::SourceRegistry>,
+    /// Workflow executor (Phase 12).
+    pub workflow_executor: Arc<hx_engine::workflow::executor::WorkflowExecutor>,
+    /// Job queue (Phase 13).
+    pub job_queue: Option<Arc<hx_engine::jobs::queue::JobQueue>>,
+    /// In-app notification channel (Phase 14).
+    pub in_app_channel: Arc<hx_engine::notifications::channels::in_app::InAppChannel>,
+    /// Notification router (Phase 14).
+    pub notification_router: Arc<hx_engine::notifications::router::NotificationRouter>,
+    /// Rate limiter (Phase 16).
+    pub rate_limiter: Arc<hx_engine::rate_limit::RateLimiter>,
+    /// DAG-based scheduling service (Phase 17).
+    pub scheduling: Option<hx_engine::scheduling::SchedulingService>,
 }
 
 /// Notification for task reminders.
@@ -141,6 +159,31 @@ impl AppState {
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .expect("failed to build HTTP client");
+        // Notification subsystem: in-app channel + alert store + router
+        let in_app_channel = Arc::new(hx_engine::notifications::channels::in_app::InAppChannel::new());
+        let alert_store = Arc::new(hx_engine::notifications::alerts::AlertRuleStore::new());
+        let mut notification_router = hx_engine::notifications::router::NotificationRouter::new(
+            Arc::clone(&alert_store),
+        );
+        notification_router.add_channel(
+            Arc::clone(&in_app_channel) as Arc<dyn hx_engine::notifications::NotificationChannel>,
+        );
+
+        // Job queue: attempt SQLite-backed queue, fall back to None on error
+        let job_queue = {
+            let db_path = format!("{}/jobs.sqlite", engine.config.data_dir);
+            match hx_engine::jobs::queue::JobQueue::new(&db_path) {
+                Ok(q) => {
+                    tracing::info!(path = %db_path, "job queue initialized");
+                    Some(Arc::new(q))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "job queue initialization failed; jobs disabled");
+                    None
+                }
+            }
+        };
+
         Self {
             engine,
             change_tx,
@@ -152,6 +195,14 @@ impl AppState {
             plugin_runtime: Arc::new(RwLock::new(plugin_runtime)),
             http_client,
             sealed_blocked_requests: AtomicU64::new(0),
+            pairing_store: Arc::new(Mutex::new(HashMap::new())),
+            source_registry: Arc::new(hx_engine::sources::SourceRegistry::new()),
+            workflow_executor: Arc::new(hx_engine::workflow::executor::WorkflowExecutor::new()),
+            job_queue,
+            in_app_channel,
+            notification_router: Arc::new(notification_router),
+            rate_limiter: Arc::new(hx_engine::rate_limit::RateLimiter::new()),
+            scheduling: Some(hx_engine::scheduling::SchedulingService::new()),
         }
     }
 

@@ -6,6 +6,7 @@ pub mod grpc;
 pub mod limits;
 pub mod metrics;
 pub mod openapi;
+pub mod pairing;
 pub mod rest;
 pub mod state;
 pub mod validation;
@@ -165,6 +166,8 @@ pub async fn start_server(
     spawn_google_calendar_sync(Arc::clone(&state.engine), shutdown_tx.subscribe());
     adapter_poll::spawn_adapter_polling(Arc::clone(&state), shutdown_tx.subscribe());
     email::spawn_email_adapter(Arc::clone(&state), shutdown_tx.subscribe());
+    spawn_job_worker(&state, shutdown_tx.subscribe());
+    spawn_workflow_scheduler(Arc::clone(&state.workflow_executor), shutdown_tx.subscribe());
 
     // Background task: expire stale proxy approvals every 60 seconds
     {
@@ -934,6 +937,48 @@ fn validate_bind_safety(
     Err(format!(
         "refusing to bind to '{bind_host}' without auth; set HELIX_AUTH_TOKEN or HELIX_JWT_SECRET, or override with HELIX_ALLOW_INSECURE_BIND=true (run 'mv server preflight' to verify your config)"
     ))
+}
+
+fn spawn_job_worker(
+    state: &Arc<state::AppState>,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
+    let Some(ref queue) = state.job_queue else {
+        tracing::info!("job queue not initialized; skipping job worker");
+        return;
+    };
+
+    let worker = hx_engine::jobs::worker::JobWorker::new(Arc::clone(queue))
+        .with_handler(Box::new(
+            hx_engine::jobs::handlers::WebhookDeliveryHandler::new(reqwest::Client::new()),
+        ))
+        .with_handler(Box::new(hx_engine::jobs::handlers::SourcePollHandler::new(
+            Arc::clone(&state.source_registry),
+        )))
+        .with_handler(Box::new(
+            hx_engine::jobs::handlers::WorkflowStepHandler::new(Arc::clone(
+                &state.workflow_executor,
+            )),
+        ))
+        .with_poll_interval(std::time::Duration::from_secs(2))
+        .with_concurrency(4);
+
+    tokio::spawn(async move {
+        worker.run(shutdown_rx).await;
+    });
+
+    tracing::info!("job worker spawned (concurrency=4, poll=2s)");
+}
+
+fn spawn_workflow_scheduler(
+    executor: Arc<hx_engine::workflow::executor::WorkflowExecutor>,
+    shutdown_rx: tokio::sync::broadcast::Receiver<()>,
+) {
+    let scheduler = hx_engine::workflow::scheduler::WorkflowScheduler::new(executor);
+    tokio::spawn(async move {
+        scheduler.run(shutdown_rx).await;
+    });
+    tracing::info!("workflow scheduler spawned");
 }
 
 fn shellexpand(s: &str) -> String {
