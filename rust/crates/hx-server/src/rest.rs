@@ -91,8 +91,32 @@ mod voice;
 use voice::{is_audio_file, transcribe_audio, transcribe_audio_api, WhisperConfig};
 #[path = "rest/adapters.rs"]
 mod adapters;
+#[path = "rest/tunnels.rs"]
+mod tunnels;
+#[path = "rest/pairing.rs"]
+mod pairing;
+#[path = "rest/sources.rs"]
+mod sources;
+#[path = "rest/jobs.rs"]
+mod jobs;
+#[path = "rest/workflows.rs"]
+mod workflows;
+#[path = "rest/notifications.rs"]
+mod notifications;
+#[path = "rest/audit_api.rs"]
+mod audit_api;
+#[path = "rest/api_keys.rs"]
+mod api_keys;
+#[path = "rest/outbound_webhooks.rs"]
+mod outbound_webhooks;
+#[path = "rest/plugin_marketplace.rs"]
+mod plugin_marketplace;
+#[path = "rest/rate_limits.rs"]
+mod rate_limits;
 #[path = "rest/ai_proxy.rs"]
 mod ai_proxy;
+#[path = "rest/scheduler.rs"]
+mod scheduler;
 #[path = "rest/conflicts.rs"]
 mod conflicts;
 #[path = "rest/consumers.rs"]
@@ -635,6 +659,19 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
         )
         .route("/api/v1/adapters/:id/send", post(adapters::send_message))
         .route("/api/v1/adapters/:id/health", post(adapters::health_check))
+        // --- Tunnels ---
+        .route(
+            "/api/v1/tunnels",
+            get(tunnels::list_tunnels).post(tunnels::register_tunnel),
+        )
+        .route(
+            "/api/v1/tunnels/:id",
+            get(tunnels::get_tunnel_status).delete(tunnels::remove_tunnel),
+        )
+        .route("/api/v1/tunnels/:id/health", post(tunnels::tunnel_health_check))
+        // --- Gateway Pairing ---
+        .route("/api/v1/pair/initiate", post(pairing::initiate_pairing))
+        .route("/api/v1/pair/confirm", post(pairing::confirm_pairing_handler))
         .route("/api/v1/multimodal/status", get(multimodal_status))
         // --- Device Sync ---
         .route("/api/v1/sync/export", post(sync::sync_export))
@@ -741,6 +778,91 @@ pub fn create_router_with_cors(state: Arc<AppState>, cors_allowed_origins: &[Str
             get(diagnostics_performance),
         )
         .route("/api/v1/audit", get(list_audit_logs))
+        // --- Sources (Phase 11) ---
+        .route(
+            "/api/v1/sources",
+            get(sources::list_sources).post(sources::register_source),
+        )
+        .route(
+            "/api/v1/sources/:id",
+            get(sources::get_source_status).delete(sources::remove_source),
+        )
+        .route("/api/v1/sources/:id/poll", post(sources::poll_source))
+        // --- Jobs (Phase 13) ---
+        .route("/api/v1/jobs", get(jobs::list_jobs))
+        .route("/api/v1/jobs/stats", get(jobs::job_stats))
+        .route("/api/v1/jobs/dead-letter", get(jobs::dead_letter_queue))
+        .route("/api/v1/jobs/purge", post(jobs::purge_jobs))
+        .route("/api/v1/jobs/:id", get(jobs::get_job))
+        .route("/api/v1/jobs/:id/retry", post(jobs::retry_job))
+        .route("/api/v1/jobs/:id/cancel", post(jobs::cancel_job))
+        // --- Workflows (Phase 12) ---
+        .route("/api/v1/workflows", get(workflows::list_workflows))
+        .route("/api/v1/workflows/:id", get(workflows::get_workflow))
+        .route("/api/v1/workflows/:id/execute", post(workflows::execute_workflow))
+        .route("/api/v1/workflows/executions", get(workflows::list_executions))
+        .route("/api/v1/workflows/executions/:id", get(workflows::get_execution))
+        .route("/api/v1/workflows/executions/:id/cancel", post(workflows::cancel_execution))
+        // --- DAG Scheduler (Phase 17) ---
+        .route("/api/v1/scheduler/workflows", post(scheduler::define_workflow).get(scheduler::list_workflows))
+        .route("/api/v1/scheduler/workflows/:name", get(scheduler::get_workflow).delete(scheduler::delete_workflow))
+        .route("/api/v1/scheduler/workflows/:name/preview", post(scheduler::preview_stored_workflow))
+        .route("/api/v1/scheduler/templates", get(scheduler::list_templates))
+        .route("/api/v1/scheduler/templates/:name/preview", post(scheduler::preview_template))
+        .route("/api/v1/scheduler/tasks", post(scheduler::submit_task))
+        .route("/api/v1/scheduler/tasks/ready", get(scheduler::ready_tasks))
+        .route("/api/v1/scheduler/tasks/waves", get(scheduler::execution_waves))
+        .route("/api/v1/scheduler/tasks/:id", get(scheduler::get_task_state))
+        .route("/api/v1/scheduler/tasks/:id/run", post(scheduler::mark_task_running))
+        .route("/api/v1/scheduler/tasks/:id/complete", post(scheduler::mark_task_completed))
+        .route("/api/v1/scheduler/tasks/:id/fail", post(scheduler::mark_task_failed))
+        .route("/api/v1/scheduler/stats", get(scheduler::scheduler_stats))
+        // --- Notifications (Phase 14) ---
+        .route("/api/v1/notifications", get(notifications::list_notifications))
+        .route("/api/v1/notifications/:id", get(notifications::get_notification))
+        .route("/api/v1/notifications/:id/read", post(notifications::mark_notification_read))
+        .route(
+            "/api/v1/notifications/alerts",
+            get(notifications::list_alert_rules).post(notifications::create_alert_rule),
+        )
+        .route(
+            "/api/v1/notifications/alerts/:id",
+            put(notifications::update_alert_rule).delete(notifications::delete_alert_rule),
+        )
+        // --- Developer API (Phase 16) ---
+        .route("/api/v1/audit/query", get(audit_api::query_audit))
+        .route(
+            "/api/v1/keys",
+            get(api_keys::list_api_keys).post(api_keys::create_api_key),
+        )
+        .route(
+            "/api/v1/keys/:id",
+            get(api_keys::get_api_key).delete(api_keys::revoke_api_key),
+        )
+        .route(
+            "/api/v1/webhooks/outbound",
+            get(outbound_webhooks::list_outbound_webhooks).post(outbound_webhooks::create_outbound_webhook),
+        )
+        .route(
+            "/api/v1/webhooks/outbound/:id",
+            get(outbound_webhooks::get_outbound_webhook).delete(outbound_webhooks::delete_outbound_webhook),
+        )
+        .route("/api/v1/webhooks/outbound/:id/test", post(outbound_webhooks::test_outbound_webhook))
+        .route("/api/v1/webhooks/outbound/:id/deliveries", get(outbound_webhooks::list_webhook_deliveries))
+        .route(
+            "/api/v1/plugins/marketplace",
+            get(plugin_marketplace::list_marketplace_plugins),
+        )
+        .route("/api/v1/plugins/marketplace/search", get(plugin_marketplace::search_marketplace_plugins))
+        .route(
+            "/api/v1/plugins/marketplace/:id",
+            get(plugin_marketplace::get_marketplace_plugin),
+        )
+        .route("/api/v1/plugins/marketplace/:id/install", post(plugin_marketplace::install_marketplace_plugin))
+        .route(
+            "/api/v1/rate-limits",
+            get(rate_limits::list_rate_limits).put(rate_limits::update_rate_limit),
+        )
         .route("/metrics", get(metrics_handler))
         .merge(swagger_ui())
         .layer(middleware::from_fn(audit_middleware))
@@ -2568,7 +2690,7 @@ async fn create_clip_note_for_bookmark(
     );
 
     let relationship = Relationship::new(stored_note.id, bookmark.id, RelationKind::References);
-    if let Err(err) = state.engine.add_relationship(relationship).await {
+    if let Err(err) = state.engine.add_relationship(&relationship).await {
         tracing::warn!(
             error = %err,
             note_id = %stored_note.id,
@@ -5462,14 +5584,14 @@ async fn embedding_diagnostics(
 
     let diagnostics = state.engine.embedding_runtime_status();
     Ok(Json(EmbeddingProviderDiagnosticsResponse {
-        configured_provider: diagnostics.configured_provider,
-        configured_model: diagnostics.configured_model,
+        configured_provider: diagnostics.configured_provider.clone(),
+        configured_model: diagnostics.configured_model.clone(),
         configured_dimensions: diagnostics.configured_dimensions,
-        effective_provider: diagnostics.effective_provider,
-        effective_model: diagnostics.effective_model,
+        effective_provider: diagnostics.effective_provider.clone(),
+        effective_model: diagnostics.effective_model.clone(),
         effective_dimensions: diagnostics.effective_dimensions,
         fallback_to_noop: diagnostics.fallback_to_noop,
-        reason: diagnostics.reason,
+        reason: diagnostics.reason.clone(),
         local_embeddings_feature_enabled: diagnostics.local_embeddings_feature_enabled,
     }))
 }
@@ -7196,7 +7318,7 @@ async fn import_bundle(
 
             state
                 .engine
-                .add_relationship(relationship)
+                .add_relationship(&relationship)
                 .await
                 .map_err(map_hx_error)?;
             imported_relationships += 1;
@@ -7643,7 +7765,7 @@ async fn upload_voice_note(
             Ok((daily_node, _created)) => {
                 let relationship =
                     Relationship::new(daily_node.id, updated.id, RelationKind::Contains);
-                if let Err(err) = state.engine.add_relationship(relationship).await {
+                if let Err(err) = state.engine.add_relationship(&relationship).await {
                     tracing::warn!(
                         error = %err,
                         daily_note_id = %daily_node.id,
@@ -9359,7 +9481,7 @@ async fn instantiate_template(
         .map_err(map_hx_error)?;
     state
         .engine
-        .add_relationship(Relationship::new(
+        .add_relationship(&Relationship::new(
             template.id,
             stored.id,
             RelationKind::DerivedFrom,
@@ -11310,7 +11432,7 @@ async fn add_relationship(
     let rel_id = rel.id;
     state
         .engine
-        .add_relationship(rel)
+        .add_relationship(&rel)
         .await
         .map_err(map_hx_error)?;
 

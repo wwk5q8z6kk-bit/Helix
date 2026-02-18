@@ -124,6 +124,63 @@ TOOL_DEFINITIONS = [
             "required": ["query"],
         },
     },
+    {
+        "name": "helix_schedule",
+        "description": "DAG-based workflow scheduling. Define, preview, and manage task workflows with dependency resolution, predictive analysis, and parallel execution waves. Backed by the Rust scheduler when available.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["define", "preview", "list", "get", "delete", "templates", "preview_template", "stats", "waves", "run", "executions", "execution_status", "cancel_execution"],
+                    "description": "Scheduling action to perform",
+                },
+                "name": {"type": "string", "description": "Workflow or template name (required for define/preview/get/delete/preview_template)"},
+                "tasks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "task_id": {"type": "string"},
+                            "task_type": {"type": "string"},
+                            "depends_on": {"type": "array", "items": {"type": "string"}},
+                            "priority": {"type": "integer"},
+                            "model": {"type": "string"},
+                        },
+                        "required": ["task_id", "task_type"],
+                    },
+                    "description": "Task definitions (required for 'define' action)",
+                },
+                "deadline": {"type": "number", "description": "Deadline as Unix timestamp"},
+                "budget": {"type": "number", "description": "Budget cap in dollars"},
+                "context": {"type": "object", "description": "Additional context for workflow execution"},
+                "execution_id": {"type": "string", "description": "Workflow execution ID (for execution_status/cancel_execution)"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
+        "name": "helix_notify",
+        "description": "Manage AI-layer notifications. Workflow completions, failures, and quality alerts are automatically captured. Use this to list, read, and acknowledge notifications.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "get", "mark_read", "unread_count"],
+                    "description": "Notification action to perform",
+                },
+                "notification_id": {"type": "string", "description": "Notification ID (for get/mark_read)"},
+                "severity": {
+                    "type": "string",
+                    "enum": ["info", "warning", "error", "critical"],
+                    "description": "Filter by severity (for list)",
+                },
+                "limit": {"type": "integer", "description": "Maximum notifications to return", "default": 20},
+            },
+            "required": ["action"],
+        },
+    },
 ]
 
 

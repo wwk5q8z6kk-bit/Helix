@@ -19,6 +19,7 @@ hx-core = { workspace = true }
 hx-engine = { workspace = true }
 hx-storage = { workspace = true }
 hx-plugin = { workspace = true }
+hx-scheduler = { workspace = true }
 axum = { workspace = true }
 tonic = { workspace = true }
 prost = { workspace = true }
@@ -46,11 +47,15 @@ utoipa-swagger-ui = { workspace = true }
 base64 = { workspace = true }
 toml = { workspace = true }
 rand = { workspace = true }
+argon2 = { workspace = true }
 serde_urlencoded = "0.7"
 imap = "2.4"
 native-tls = "0.2"
 mailparse = "0.15"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1-native-tls"] }
+subtle = "2"
+hmac = { workspace = true }
+sha2 = { workspace = true }
 
 [build-dependencies]
 tonic-build = "0.12"

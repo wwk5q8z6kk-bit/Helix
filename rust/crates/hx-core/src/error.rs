@@ -71,6 +71,9 @@ pub enum HxError {
 
     #[error("federation error: {0}")]
     Federation(String),
+
+    #[error("sealed/locked: {0}")]
+    SealedLocked(String),
 }
 
 pub type MvResult<T> = Result<T, HxError>;

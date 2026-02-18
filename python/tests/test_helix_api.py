@@ -166,3 +166,410 @@ async def test_generate_rejects_missing_prompt(client):
 async def test_generate_rejects_bad_temperature(client):
     resp = await client.post("/api/generate", json={"prompt": "hi", "temperature": 5.0})
     assert resp.status_code == 422
+
+
+# --- Scheduling endpoints ---
+
+@pytest.fixture
+def sched_app(mock_bridge, mock_router):
+    """Create app with mocked orchestrator that has scheduler methods."""
+    from core.api.helix_api import app as real_app
+    from core.di_container import get_container
+
+    container = get_container()
+    container._bridge = mock_bridge
+    container._llm_router = mock_router
+
+    # Mock the orchestrator's scheduler methods
+    orch = MagicMock()
+    orch.define_workflow = AsyncMock(return_value={
+        "name": "wf1", "task_count": 2, "wave_count": 2,
+        "max_parallelism": 1, "task_order": ["a", "b"], "waves": [["a"], ["b"]],
+    })
+    orch.list_workflows = AsyncMock(return_value=[{"name": "wf1"}, {"name": "wf2"}])
+    orch.get_workflow = AsyncMock(return_value={"name": "wf1", "tasks": []})
+    orch.delete_workflow = AsyncMock(return_value=True)
+    orch.preview_workflow = AsyncMock(return_value={"feasible": True, "waves": 2})
+    orch.list_workflow_templates = AsyncMock(return_value=["code_review_pipeline", "research_pipeline"])
+    orch.preview_template = AsyncMock(return_value={"name": "code_review_pipeline", "waves": 3})
+    orch.scheduler_stats = AsyncMock(return_value={"total": 5, "ready": 2})
+    orch.execution_waves = AsyncMock(return_value=[["a"], ["b", "c"]])
+    container._orchestrator = orch
+    return real_app
+
+
+@pytest.fixture
+async def sched_client(sched_app):
+    transport = ASGITransport(app=sched_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_define_workflow(sched_client):
+    resp = await sched_client.post("/api/scheduler/workflows", json={
+        "name": "wf1",
+        "tasks": [{"task_id": "a", "task_type": "code_generation"}],
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["name"] == "wf1"
+    assert data["task_count"] == 2
+
+
+async def test_define_workflow_failure(sched_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.define_workflow.return_value = None
+    resp = await sched_client.post("/api/scheduler/workflows", json={
+        "name": "bad", "tasks": [],
+    })
+    assert resp.status_code == 400
+
+
+async def test_list_workflows(sched_client):
+    resp = await sched_client.get("/api/scheduler/workflows")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) == 2
+
+
+async def test_get_workflow(sched_client):
+    resp = await sched_client.get("/api/scheduler/workflows/wf1")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "wf1"
+
+
+async def test_get_workflow_not_found(sched_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.get_workflow.return_value = None
+    resp = await sched_client.get("/api/scheduler/workflows/nope")
+    assert resp.status_code == 404
+
+
+async def test_delete_workflow(sched_client):
+    resp = await sched_client.delete("/api/scheduler/workflows/wf1")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "deleted"
+
+
+async def test_delete_workflow_not_found(sched_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.delete_workflow.return_value = False
+    resp = await sched_client.delete("/api/scheduler/workflows/nope")
+    assert resp.status_code == 404
+
+
+async def test_preview_workflow(sched_client):
+    resp = await sched_client.post("/api/scheduler/workflows/wf1/preview")
+    assert resp.status_code == 200
+    assert resp.json()["feasible"] is True
+
+
+async def test_preview_workflow_not_found(sched_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.preview_workflow.return_value = None
+    resp = await sched_client.post("/api/scheduler/workflows/nope/preview")
+    assert resp.status_code == 404
+
+
+async def test_list_templates(sched_client):
+    resp = await sched_client.get("/api/scheduler/templates")
+    assert resp.status_code == 200
+    templates = resp.json()["templates"]
+    assert "code_review_pipeline" in templates
+
+
+async def test_preview_template(sched_client):
+    resp = await sched_client.post("/api/scheduler/templates/code_review_pipeline/preview")
+    assert resp.status_code == 200
+    assert resp.json()["waves"] == 3
+
+
+async def test_preview_template_not_found(sched_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.preview_template.return_value = None
+    resp = await sched_client.post("/api/scheduler/templates/bogus/preview")
+    assert resp.status_code == 404
+
+
+async def test_scheduler_stats(sched_client):
+    resp = await sched_client.get("/api/scheduler/stats")
+    assert resp.status_code == 200
+    assert resp.json()["total"] == 5
+
+
+async def test_scheduler_waves(sched_client):
+    resp = await sched_client.get("/api/scheduler/waves")
+    assert resp.status_code == 200
+    waves = resp.json()["waves"]
+    assert len(waves) == 2
+    assert waves[0] == ["a"]
+
+
+# --- Workflow Execution endpoints ---
+
+
+@pytest.fixture
+def exec_app(mock_bridge, mock_router):
+    """Create app with mocked orchestrator that has execution methods."""
+    from core.api.helix_api import app as real_app
+    from core.di_container import get_container
+
+    container = get_container()
+    container._bridge = mock_bridge
+    container._llm_router = mock_router
+
+    mock_exec_dict = {
+        "execution_id": "wfx-test123",
+        "workflow_name": "my-wf",
+        "status": "running",
+        "task_ids": ["a", "b"],
+        "progress": 0.0,
+    }
+
+    mock_wf_exec = MagicMock()
+    mock_wf_exec.to_dict.return_value = mock_exec_dict
+
+    orch = MagicMock()
+    orch.run_workflow = AsyncMock(return_value=mock_wf_exec)
+    orch.list_workflow_executions = MagicMock(return_value=[mock_exec_dict])
+    orch.get_workflow_execution = MagicMock(return_value=mock_exec_dict)
+    orch.cancel_workflow_execution = AsyncMock(return_value=True)
+    container._orchestrator = orch
+    return real_app
+
+
+@pytest.fixture
+async def exec_client(exec_app):
+    transport = ASGITransport(app=exec_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_run_workflow_endpoint(exec_client):
+    resp = await exec_client.post("/api/scheduler/workflows/my-wf/run", json={})
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["execution_id"] == "wfx-test123"
+    assert data["status"] == "running"
+
+
+async def test_run_workflow_not_found(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.run_workflow.side_effect = ValueError("not found")
+    resp = await exec_client.post("/api/scheduler/workflows/bogus/run", json={})
+    assert resp.status_code == 404
+
+
+async def test_list_executions(exec_client):
+    resp = await exec_client.get("/api/scheduler/executions")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data) >= 1
+
+
+async def test_get_execution(exec_client):
+    resp = await exec_client.get("/api/scheduler/executions/wfx-test123")
+    assert resp.status_code == 200
+    assert resp.json()["execution_id"] == "wfx-test123"
+
+
+async def test_get_execution_not_found(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.get_workflow_execution.return_value = None
+    resp = await exec_client.get("/api/scheduler/executions/bogus")
+    assert resp.status_code == 404
+
+
+async def test_cancel_execution(exec_client):
+    resp = await exec_client.post("/api/scheduler/executions/wfx-test123/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "cancelled"
+
+
+async def test_cancel_execution_not_running(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.cancel_workflow_execution.return_value = False
+    resp = await exec_client.post("/api/scheduler/executions/bogus/cancel")
+    assert resp.status_code == 404
+
+
+# --- Workflow Execution SSE Progress ---
+
+
+async def test_execution_progress_not_found(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.get_workflow_execution.return_value = None
+    resp = await exec_client.get("/api/scheduler/executions/bogus/progress")
+    assert resp.status_code == 404
+
+
+async def test_execution_progress_already_completed(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.get_workflow_execution.return_value = {
+        "execution_id": "wfx-done", "status": "completed", "progress": 1.0,
+    }
+    resp = await exec_client.get("/api/scheduler/executions/wfx-done/progress")
+    assert resp.status_code == 200
+    assert "text/event-stream" in resp.headers.get("content-type", "")
+    # Body should contain the terminal event
+    body = resp.text
+    assert "event: completed" in body
+    assert "wfx-done" in body
+
+
+async def test_execution_progress_already_failed(exec_client):
+    from core.di_container import get_container
+    get_container()._orchestrator.get_workflow_execution.return_value = {
+        "execution_id": "wfx-bad", "status": "failed", "error": "boom",
+    }
+    resp = await exec_client.get("/api/scheduler/executions/wfx-bad/progress")
+    assert resp.status_code == 200
+    body = resp.text
+    assert "event: failed" in body
+
+
+# --- Notification endpoints ---
+
+
+@pytest.fixture
+def notif_app(mock_bridge, mock_router):
+    """Create app with a pre-populated notification service."""
+    from core.api.helix_api import app as real_app
+    from core.di_container import get_container
+    from core.notifications.notification_service import NotificationService, Severity
+
+    container = get_container()
+    container._bridge = mock_bridge
+    container._llm_router = mock_router
+
+    # Create notification service without bridge so tests use local in-memory store
+    svc = NotificationService()
+    container._notification_service = svc
+    # Pre-populate some notifications
+    n1 = svc.create_notification("Workflow A completed", "All tasks done.", Severity.INFO, "orchestrator")
+    n2 = svc.create_notification("Workflow B failed", "Task T3 timed out.", Severity.ERROR, "orchestrator")
+    import asyncio
+    asyncio.get_event_loop().run_until_complete(svc.send(n1))
+    asyncio.get_event_loop().run_until_complete(svc.send(n2))
+    # Store IDs for lookup tests
+    real_app.state.test_notif_ids = [n1.id, n2.id]
+    return real_app
+
+
+@pytest.fixture
+async def notif_client(notif_app):
+    transport = ASGITransport(app=notif_app)
+    async with AsyncClient(transport=transport, base_url="http://test") as c:
+        yield c
+
+
+async def test_list_notifications(notif_client):
+    resp = await notif_client.get("/api/notifications")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 2
+    assert len(data["notifications"]) == 2
+    # Newest first
+    assert "failed" in data["notifications"][0]["title"].lower()
+
+
+async def test_list_notifications_filter_severity(notif_client):
+    resp = await notif_client.get("/api/notifications?severity=error")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["notifications"]) == 1
+    assert data["notifications"][0]["severity"] == "error"
+
+
+async def test_list_notifications_invalid_severity(notif_client):
+    resp = await notif_client.get("/api/notifications?severity=bogus")
+    assert resp.status_code == 400
+
+
+async def test_get_notification(notif_client, notif_app):
+    nid = notif_app.state.test_notif_ids[0]
+    resp = await notif_client.get(f"/api/notifications/{nid}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["id"] == nid
+    assert "Workflow A" in data["title"]
+
+
+async def test_get_notification_not_found(notif_client):
+    resp = await notif_client.get("/api/notifications/nonexistent")
+    assert resp.status_code == 404
+
+
+async def test_mark_notification_read(notif_client, notif_app):
+    nid = notif_app.state.test_notif_ids[1]
+    resp = await notif_client.post(f"/api/notifications/{nid}/read")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "read"
+
+    # Verify it's marked as read
+    resp2 = await notif_client.get(f"/api/notifications/{nid}")
+    assert resp2.json()["read"] is True
+
+
+async def test_mark_notification_read_not_found(notif_client):
+    resp = await notif_client.post("/api/notifications/bogus/read")
+    assert resp.status_code == 404
+
+
+async def test_list_notifications_unread_only(notif_client, notif_app):
+    # Mark one as read first
+    nid = notif_app.state.test_notif_ids[0]
+    await notif_client.post(f"/api/notifications/{nid}/read")
+
+    resp = await notif_client.get("/api/notifications?unread_only=true")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["notifications"]) == 1
+    assert data["unread"] == 1
+
+
+# --- Rate limiting ---
+
+
+async def test_rate_limit_header_present(client):
+    """Rate limit middleware should attach X-RateLimit-Remaining header."""
+    resp = await client.get("/api/stats")
+    assert resp.status_code == 200
+    assert "X-RateLimit-Remaining" in resp.headers
+
+
+async def test_rate_limit_excluded_for_health(client):
+    """Health endpoint should be excluded from rate limiting (no rate limit headers)."""
+    resp = await client.get("/health")
+    assert resp.status_code == 200
+    # /health is excluded from rate limiting, so no rate limit header
+    assert "X-RateLimit-Remaining" not in resp.headers
+
+
+# --- Source connector endpoints ---
+
+
+async def test_list_sources(client, mock_bridge):
+    mock_bridge.list_sources = AsyncMock(return_value=[{"id": "s1", "type": "directory"}])
+    resp = await client.get("/api/sources")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["sources"]) == 1
+    assert data["sources"][0]["id"] == "s1"
+
+
+async def test_register_source(client, mock_bridge):
+    mock_bridge.register_source = AsyncMock(return_value={"id": "s2", "type": "rss", "name": "blog"})
+    resp = await client.post("/api/sources", json={"type": "rss", "name": "blog"})
+    assert resp.status_code == 200
+    assert resp.json()["type"] == "rss"
+
+
+async def test_poll_source(client, mock_bridge):
+    mock_bridge.poll_source = AsyncMock(return_value=[{"title": "doc1"}])
+    resp = await client.post("/api/sources/s1/poll")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["source_id"] == "s1"
+    assert len(data["documents"]) == 1

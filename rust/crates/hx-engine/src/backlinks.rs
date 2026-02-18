@@ -29,7 +29,7 @@ pub struct ExtractedContentReferenceTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedContentReferenceTarget {
-    pub node_id: Uuid,
+    pub target_id: Uuid,
     pub source_kind: ContentReferenceSourceKind,
 }
 
@@ -497,7 +497,7 @@ pub fn resolve_reference_targets_with_kind(
         }
         if seen.insert(id) {
             resolved.push(ResolvedContentReferenceTarget {
-                node_id: id,
+                target_id: id,
                 source_kind: target.source_kind,
             });
         }
@@ -520,7 +520,7 @@ pub fn resolve_reference_targets(
         .collect::<Vec<_>>();
     resolve_reference_targets_with_kind(&typed_targets, current_node_id, index)
         .into_iter()
-        .map(|target| target.node_id)
+        .map(|target| target.target_id)
         .collect()
 }
 
@@ -655,7 +655,7 @@ mod tests {
         assert_eq!(
             resolved,
             vec![ResolvedContentReferenceTarget {
-                node_id: shared,
+                target_id: shared,
                 source_kind: ContentReferenceSourceKind::WikiLink,
             }]
         );

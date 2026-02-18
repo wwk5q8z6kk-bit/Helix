@@ -744,7 +744,7 @@ impl HelixService for HelixGrpc {
 
         self.state
             .engine
-            .add_relationship(rel)
+            .add_relationship(&rel)
             .await
             .map_err(|e| Status::internal(e.to_string()))?;
 

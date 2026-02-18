@@ -1,4 +1,5 @@
 pub mod backup;
+pub mod chat;
 pub mod config;
 pub mod db;
 pub mod encrypt;
@@ -13,6 +14,7 @@ pub mod recall;
 pub mod search;
 pub mod secret;
 pub mod server;
+pub mod setup;
 pub mod stats;
 pub mod store;
 

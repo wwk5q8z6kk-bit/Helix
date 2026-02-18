@@ -25,11 +25,23 @@ bridge = RustCoreBridge()
 
 @server.list_tools()
 async def list_tools() -> list[Tool]:
-    """Return available Helix tools."""
-    return [
+    """Return available Helix tools, including Composio tools when enabled."""
+    tools = [
         Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"])
         for t in get_tool_definitions()
     ]
+
+    # Include Composio tools in composio/hybrid mode
+    try:
+        from core.composio.composio_bridge import ComposioBridge, ToolMode
+        composio = ComposioBridge()
+        if composio.tool_mode in (ToolMode.COMPOSIO, ToolMode.HYBRID):
+            for t in composio.get_tool_definitions():
+                tools.append(Tool(name=t["name"], description=t["description"], inputSchema=t["inputSchema"]))
+    except Exception:
+        pass  # Composio unavailable — continue with built-in tools only
+
+    return tools
 
 
 @server.call_tool()
@@ -50,6 +62,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             result = await _handle_reason(arguments)
         elif name == "helix_learn":
             result = await _handle_learn(arguments)
+        elif name == "helix_schedule":
+            result = await _handle_schedule(arguments)
+        elif name == "helix_notify":
+            result = await _handle_notify(arguments)
         else:
             result = {"error": f"Unknown tool: {name}"}
 
@@ -198,6 +214,165 @@ async def _handle_learn(args: dict) -> dict:
         "success_rate": stats.get("success_rate", 0.0),
         "average_quality": stats.get("average_quality", 0.0),
     }
+
+
+async def _handle_schedule(args: dict) -> dict:
+    """Handle helix_schedule tool — DAG workflow scheduling via Rust core."""
+    action = args["action"]
+    name = args.get("name")
+
+    if action == "define":
+        if not name or "tasks" not in args:
+            return {"error": "define requires 'name' and 'tasks'"}
+        result = await bridge.scheduler_define_workflow(
+            name=name,
+            tasks=args["tasks"],
+            deadline=args.get("deadline"),
+            budget=args.get("budget"),
+        )
+        return result if result else {"error": "Failed to define workflow"}
+
+    elif action == "preview":
+        if not name:
+            return {"error": "preview requires 'name'"}
+        result = await bridge.scheduler_preview_workflow(name)
+        return result if result else {"error": f"Workflow '{name}' not found"}
+
+    elif action == "list":
+        return {"workflows": await bridge.scheduler_list_workflows()}
+
+    elif action == "get":
+        if not name:
+            return {"error": "get requires 'name'"}
+        result = await bridge.scheduler_get_workflow(name)
+        return result if result else {"error": f"Workflow '{name}' not found"}
+
+    elif action == "delete":
+        if not name:
+            return {"error": "delete requires 'name'"}
+        deleted = await bridge.scheduler_delete_workflow(name)
+        return {"deleted": deleted, "name": name}
+
+    elif action == "templates":
+        return {"templates": await bridge.scheduler_list_templates()}
+
+    elif action == "preview_template":
+        if not name:
+            return {"error": "preview_template requires 'name'"}
+        result = await bridge.scheduler_preview_template(name)
+        return result if result else {"error": f"Template '{name}' not found"}
+
+    elif action == "stats":
+        return await bridge.scheduler_stats()
+
+    elif action == "waves":
+        return {"waves": await bridge.scheduler_execution_waves()}
+
+    elif action == "run":
+        if not name:
+            return {"error": "run requires 'name'"}
+        from core.di_container import get_container
+        container = get_container()
+        try:
+            wf_exec = await container.orchestrator.run_workflow(
+                name, context=args.get("context"),
+            )
+            return wf_exec.to_dict()
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+    elif action == "executions":
+        from core.di_container import get_container
+        container = get_container()
+        return {"executions": container.orchestrator.list_workflow_executions()}
+
+    elif action == "execution_status":
+        exec_id = args.get("execution_id")
+        if not exec_id:
+            return {"error": "execution_status requires 'execution_id'"}
+        from core.di_container import get_container
+        container = get_container()
+        result = container.orchestrator.get_workflow_execution(exec_id)
+        return result if result else {"error": f"Execution '{exec_id}' not found"}
+
+    elif action == "cancel_execution":
+        exec_id = args.get("execution_id")
+        if not exec_id:
+            return {"error": "cancel_execution requires 'execution_id'"}
+        from core.di_container import get_container
+        container = get_container()
+        cancelled = await container.orchestrator.cancel_workflow_execution(exec_id)
+        return {"cancelled": cancelled, "execution_id": exec_id}
+
+    else:
+        return {"error": f"Unknown schedule action: {action}"}
+
+
+async def _handle_notify(args: dict) -> dict:
+    """Handle helix_notify tool."""
+    from core.di_container import get_container
+    from core.notifications.notification_service import Severity
+
+    svc = get_container().notification_service
+    action = args.get("action", "list")
+
+    if action == "list":
+        sev = None
+        sev_str = args.get("severity")
+        if sev_str:
+            try:
+                sev = Severity(sev_str)
+            except ValueError:
+                return {"error": f"Invalid severity: {sev_str}"}
+
+        limit = args.get("limit", 20)
+        items = await svc.list(severity=sev, limit=limit)
+        return {
+            "notifications": [
+                {
+                    "id": n.id,
+                    "title": n.title,
+                    "body": n.body,
+                    "severity": n.severity.value,
+                    "source": n.source,
+                    "created_at": n.created_at.isoformat() if n.created_at else None,
+                    "read": n.read,
+                }
+                for n in items
+            ],
+            "total": await svc.count(),
+            "unread": await svc.count_unread(),
+        }
+
+    elif action == "get":
+        nid = args.get("notification_id")
+        if not nid:
+            return {"error": "notification_id required for 'get' action"}
+        n = await svc.get(nid)
+        if n is None:
+            return {"error": f"Notification '{nid}' not found"}
+        return {
+            "id": n.id, "title": n.title, "body": n.body,
+            "severity": n.severity.value, "source": n.source,
+            "metadata": n.metadata,
+            "created_at": n.created_at.isoformat() if n.created_at else None,
+            "read": n.read,
+        }
+
+    elif action == "mark_read":
+        nid = args.get("notification_id")
+        if not nid:
+            return {"error": "notification_id required for 'mark_read' action"}
+        found = await svc.mark_read(nid)
+        if not found:
+            return {"error": f"Notification '{nid}' not found"}
+        return {"marked_read": True, "notification_id": nid}
+
+    elif action == "unread_count":
+        return {"unread": await svc.count_unread(), "total": await svc.count()}
+
+    else:
+        return {"error": f"Unknown notify action: {action}"}
 
 
 async def main():

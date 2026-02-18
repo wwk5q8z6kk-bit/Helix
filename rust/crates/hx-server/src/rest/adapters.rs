@@ -145,6 +145,18 @@ pub async fn register_adapter(
         AdapterType::Email => {
             Arc::new(hx_engine::adapters::email::EmailAdapter::new(config.clone()).map_err(map_hx_error)?)
         }
+        AdapterType::Telegram => {
+            Arc::new(hx_engine::adapters::telegram::TelegramAdapter::new(config.clone()).map_err(map_hx_error)?)
+        }
+        AdapterType::Matrix => {
+            Arc::new(hx_engine::adapters::matrix::MatrixAdapter::new(config.clone()).map_err(map_hx_error)?)
+        }
+        AdapterType::Webhook => {
+            Arc::new(hx_engine::adapters::webhook::WebhookAdapter::new(config.clone()).map_err(map_hx_error)?)
+        }
+        AdapterType::CliChat => {
+            Arc::new(hx_engine::adapters::cli_chat::CliChatAdapter::new(config.clone()).map_err(map_hx_error)?)
+        }
     };
 
     state.engine.adapters.register(config, adapter).await;

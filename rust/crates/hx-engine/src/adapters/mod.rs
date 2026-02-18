@@ -5,9 +5,13 @@
 //! to [`RelayMessage`] objects and flow through the relay engine, automatically
 //! creating vault nodes for searchability.
 
+pub mod cli_chat;
 pub mod discord;
 pub mod email;
+pub mod matrix;
 pub mod slack;
+pub mod telegram;
+pub mod webhook;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -66,6 +70,10 @@ pub enum AdapterType {
     Slack,
     Discord,
     Email,
+    Telegram,
+    Matrix,
+    Webhook,
+    CliChat,
 }
 
 impl AdapterType {
@@ -74,6 +82,10 @@ impl AdapterType {
             Self::Slack => "slack",
             Self::Discord => "discord",
             Self::Email => "email",
+            Self::Telegram => "telegram",
+            Self::Matrix => "matrix",
+            Self::Webhook => "webhook",
+            Self::CliChat => "cli_chat",
         }
     }
 }
@@ -85,6 +97,10 @@ impl std::str::FromStr for AdapterType {
             "slack" => Ok(Self::Slack),
             "discord" => Ok(Self::Discord),
             "email" => Ok(Self::Email),
+            "telegram" => Ok(Self::Telegram),
+            "matrix" => Ok(Self::Matrix),
+            "webhook" => Ok(Self::Webhook),
+            "cli_chat" => Ok(Self::CliChat),
             _ => Err(format!("unknown adapter type: {s}")),
         }
     }
@@ -572,22 +588,32 @@ mod tests {
         assert_eq!(AdapterType::Slack.to_string(), "slack");
         assert_eq!(AdapterType::Discord.to_string(), "discord");
         assert_eq!(AdapterType::Email.to_string(), "email");
+        assert_eq!(AdapterType::Telegram.to_string(), "telegram");
+        assert_eq!(AdapterType::Matrix.to_string(), "matrix");
+        assert_eq!(AdapterType::Webhook.to_string(), "webhook");
+        assert_eq!(AdapterType::CliChat.to_string(), "cli_chat");
 
         assert_eq!("slack".parse::<AdapterType>().unwrap(), AdapterType::Slack);
         assert_eq!("discord".parse::<AdapterType>().unwrap(), AdapterType::Discord);
         assert_eq!("email".parse::<AdapterType>().unwrap(), AdapterType::Email);
+        assert_eq!("telegram".parse::<AdapterType>().unwrap(), AdapterType::Telegram);
+        assert_eq!("matrix".parse::<AdapterType>().unwrap(), AdapterType::Matrix);
+        assert_eq!("webhook".parse::<AdapterType>().unwrap(), AdapterType::Webhook);
+        assert_eq!("cli_chat".parse::<AdapterType>().unwrap(), AdapterType::CliChat);
     }
 
     #[test]
     fn adapter_type_from_str_rejects_unknown() {
-        assert!("webhook".parse::<AdapterType>().is_err());
         assert!("Slack".parse::<AdapterType>().is_err()); // case-sensitive
         assert!("".parse::<AdapterType>().is_err());
     }
 
     #[test]
     fn adapter_type_as_str_matches_display() {
-        for at in [AdapterType::Slack, AdapterType::Discord, AdapterType::Email] {
+        for at in [
+            AdapterType::Slack, AdapterType::Discord, AdapterType::Email,
+            AdapterType::Telegram, AdapterType::Matrix, AdapterType::Webhook, AdapterType::CliChat,
+        ] {
             assert_eq!(at.as_str(), at.to_string());
         }
     }

@@ -4,6 +4,7 @@ pub mod exchange;
 pub use exchange::*;
 pub mod keychain;
 pub use keychain::*;
+pub mod pairing;
 pub mod policy;
 pub use policy::*;
 pub mod proxy;
@@ -1080,6 +1081,36 @@ pub struct UpdateProfileRequest {
 	pub signature_name: Option<String>,
 	pub signature_public_key: Option<String>,
 	pub metadata: Option<HashMap<String, serde_json::Value>>,
+}
+
+// ---------------------------------------------------------------------------
+// Task Prioritization
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrioritizedTask {
+    pub task: KnowledgeNode,
+    pub score: f64,
+    pub rank: usize,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskPrioritizationOptions {
+    pub namespace: Option<String>,
+    pub limit: usize,
+    pub include_completed: bool,
+    pub include_without_due: bool,
+    pub persist: bool,
+    pub now: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskPriorityCandidate {
+    pub task: KnowledgeNode,
+    pub score: f64,
+    pub reason: String,
+    pub due_at: Option<DateTime<Utc>>,
 }
 
 #[cfg(test)]

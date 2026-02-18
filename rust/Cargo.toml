@@ -10,6 +10,7 @@ members = [
     "crates/hx-mcp",
     "crates/hx-cli",
     "crates/hx-plugin",
+    "crates/hx-scheduler",
 ]
 
 [workspace.package]
@@ -33,6 +34,7 @@ hx-engine = { path = "crates/hx-engine" }
 hx-server = { path = "crates/hx-server" }
 hx-mcp = { path = "crates/hx-mcp" }
 hx-plugin = { path = "crates/hx-plugin" }
+hx-scheduler = { path = "crates/hx-scheduler" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -95,6 +97,7 @@ url = "2"
 
 # Misc
 async-trait = "0.1"
+once_cell = "1"
 futures = "0.3"
 bytes = "1"
 tokio-stream = "0.1"

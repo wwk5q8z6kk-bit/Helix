@@ -183,6 +183,23 @@ enum Commands {
         #[arg(long)]
         allow_unscoped: bool,
     },
+
+    /// Interactive chat session via CLI
+    Chat {
+        /// Server URL to connect to
+        #[arg(long, default_value = "http://127.0.0.1:9470")]
+        server: String,
+        /// Display name for this chat session
+        #[arg(long, default_value = "cli-user")]
+        name: String,
+    },
+
+    /// Interactive setup wizard for first-time configuration
+    Setup {
+        /// Skip interactive prompts, use defaults
+        #[arg(long)]
+        quick: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1007,5 +1024,9 @@ async fn main() -> Result<()> {
             access_key,
             allow_unscoped,
         } => commands::mcp::run(&cli.config, access_key, allow_unscoped).await,
+
+        Commands::Chat { server, name } => commands::chat::run_chat(&server, &name).await,
+
+        Commands::Setup { quick } => commands::setup::run_setup(quick, &cli.config).await,
     }
 }

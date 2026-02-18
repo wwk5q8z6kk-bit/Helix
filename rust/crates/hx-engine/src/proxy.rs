@@ -301,7 +301,7 @@ impl ProxyEngine {
             _ => unreachable!(),
         };
         let required = derive_http_scopes(&req.method);
-        check_scopes(&required, scopes).map_err(|e| {
+        check_scopes(&required, &scopes).map_err(|e| {
             ProxyError::Denied(format!("access denied for '{}': {e}", req.secret_ref))
         })?;
 
@@ -528,7 +528,7 @@ impl ProxyEngine {
                 _ => unreachable!(),
             };
             let required = derive_exec_scopes(&req.command);
-            check_scopes(&required, scopes).map_err(|e| {
+            check_scopes(&required, &scopes).map_err(|e| {
                 ProxyError::Denied(format!("access denied for '{secret_key}': {e}"))
             })?;
 

@@ -13,6 +13,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use lettre::message::Mailbox;
+use lettre::transport::smtp::authentication::Credentials;
+use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use uuid::Uuid;
 
 use hx_core::{MemoryQuery, HxError, MvResult, Proposal, ProposalAction, ProposalSender};
@@ -92,44 +95,38 @@ impl ExternalAdapter for EmailAdapter {
             message.channel.clone()
         };
 
-        let port = self.smtp_port();
-
-        // Use reqwest-compatible approach: spawn blocking SMTP via raw TCP
-        // This avoids adding lettre as a dependency — we use a minimal SMTP
-        // implementation via tokio's TCP stream for the basic STARTTLS flow.
-        //
-        // For production, consider switching to the `lettre` crate.
-        // For now, we use a simple approach that works for common SMTP servers.
         let subject = message
             .metadata
             .get("subject")
             .cloned()
             .unwrap_or_else(|| "Helix Message".to_string());
 
-        let email_body = format!(
-            "From: {from}\r\n\
-             To: {to}\r\n\
-             Subject: {subject}\r\n\
-             Content-Type: text/plain; charset=utf-8\r\n\
-             \r\n\
-             {content}",
-            content = message.content,
-        );
+        // Build the email message using lettre
+        let from_mailbox: Mailbox = from
+            .parse()
+            .map_err(|e| HxError::Config(format!("invalid from_address '{from}': {e}")))?;
+        let to_mailbox: Mailbox = to
+            .parse()
+            .map_err(|e| HxError::Config(format!("invalid recipient '{to}': {e}")))?;
 
-        // Use a lightweight SMTP send via the `reqwest`-style HTTP bridge
-        // We shell out to a simple TCP connection for SMTP
-        let host_owned = host.to_string();
-        let user_owned = user.to_string();
-        let pass_owned = pass.to_string();
+        let email = Message::builder()
+            .from(from_mailbox)
+            .to(to_mailbox)
+            .subject(&subject)
+            .body(message.content.clone())
+            .map_err(|e| HxError::Internal(format!("failed to build email: {e}")))?;
 
-        let result = tokio::task::spawn_blocking(move || {
-            send_smtp_email(&host_owned, port, &user_owned, &pass_owned, &email_body)
-        })
-        .await
-        .map_err(|e| HxError::Internal(format!("email task join error: {e}")))?;
+        // Create async SMTP transport with STARTTLS
+        let creds = Credentials::new(user.to_string(), pass.to_string());
 
-        match result {
-            Ok(()) => {
+        let transport = AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(host)
+            .map_err(|e| HxError::Internal(format!("SMTP transport error: {e}")))?
+            .port(self.smtp_port())
+            .credentials(creds)
+            .build();
+
+        match transport.send(email).await {
+            Ok(_response) => {
                 *self.last_send.lock().unwrap() = Some(Utc::now());
                 *self.last_error.lock().unwrap() = None;
                 Ok(())
@@ -184,134 +181,6 @@ impl ExternalAdapter for EmailAdapter {
             error,
         }
     }
-}
-
-/// Minimal SMTP send via raw TCP.
-///
-/// Supports PLAIN auth over a non-TLS connection (port 25/587 without STARTTLS).
-/// For production use with TLS, consider the `lettre` crate.
-fn send_smtp_email(
-    host: &str,
-    port: u16,
-    user: &str,
-    pass: &str,
-    email_data: &str,
-) -> Result<(), String> {
-    use std::io::{BufRead, BufReader, Write};
-    use std::net::TcpStream;
-
-    let stream =
-        TcpStream::connect(format!("{host}:{port}")).map_err(|e| format!("connect: {e}"))?;
-    stream
-        .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-        .ok();
-    stream
-        .set_write_timeout(Some(std::time::Duration::from_secs(10)))
-        .ok();
-
-    let mut reader = BufReader::new(stream.try_clone().map_err(|e| format!("clone: {e}"))?);
-    let mut writer = stream;
-
-    let mut response = String::new();
-
-    // Read greeting
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read greeting: {e}"))?;
-    if !response.starts_with("220") {
-        return Err(format!("unexpected greeting: {response}"));
-    }
-
-    // EHLO
-    write!(writer, "EHLO helix\r\n").map_err(|e| format!("write EHLO: {e}"))?;
-    writer.flush().map_err(|e| format!("flush EHLO: {e}"))?;
-    loop {
-        response.clear();
-        reader
-            .read_line(&mut response)
-            .map_err(|e| format!("read EHLO: {e}"))?;
-        if response.len() < 4 || response.as_bytes()[3] == b' ' {
-            break;
-        }
-    }
-
-    // AUTH PLAIN
-    let auth_str = format!("\0{user}\0{pass}");
-    let auth_b64 = base64_encode(auth_str.as_bytes());
-    write!(writer, "AUTH PLAIN {auth_b64}\r\n").map_err(|e| format!("write AUTH: {e}"))?;
-    writer.flush().map_err(|e| format!("flush AUTH: {e}"))?;
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read AUTH: {e}"))?;
-    if !response.starts_with("235") {
-        return Err(format!("auth failed: {response}"));
-    }
-
-    // Extract From/To from email_data headers
-    let from = email_data
-        .lines()
-        .find(|l| l.starts_with("From:"))
-        .and_then(|l| l.strip_prefix("From:"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| user.to_string());
-    let to = email_data
-        .lines()
-        .find(|l| l.starts_with("To:"))
-        .and_then(|l| l.strip_prefix("To:"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default();
-
-    // MAIL FROM
-    write!(writer, "MAIL FROM:<{from}>\r\n").map_err(|e| format!("write MAIL: {e}"))?;
-    writer.flush().map_err(|e| format!("flush MAIL: {e}"))?;
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read MAIL: {e}"))?;
-
-    // RCPT TO
-    write!(writer, "RCPT TO:<{to}>\r\n").map_err(|e| format!("write RCPT: {e}"))?;
-    writer.flush().map_err(|e| format!("flush RCPT: {e}"))?;
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read RCPT: {e}"))?;
-
-    // DATA
-    write!(writer, "DATA\r\n").map_err(|e| format!("write DATA: {e}"))?;
-    writer.flush().map_err(|e| format!("flush DATA: {e}"))?;
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read DATA: {e}"))?;
-    if !response.starts_with("354") {
-        return Err(format!("DATA rejected: {response}"));
-    }
-
-    // Send email body + terminator
-    write!(writer, "{email_data}\r\n.\r\n").map_err(|e| format!("write body: {e}"))?;
-    writer.flush().map_err(|e| format!("flush body: {e}"))?;
-    response.clear();
-    reader
-        .read_line(&mut response)
-        .map_err(|e| format!("read body response: {e}"))?;
-    if !response.starts_with("250") {
-        return Err(format!("message rejected: {response}"));
-    }
-
-    // QUIT
-    write!(writer, "QUIT\r\n").map_err(|e| format!("write QUIT: {e}"))?;
-    writer.flush().ok();
-
-    Ok(())
-}
-
-fn base64_encode(data: &[u8]) -> String {
-    use base64::engine::general_purpose::STANDARD;
-    use base64::Engine;
-    STANDARD.encode(data)
 }
 
 // ---------------------------------------------------------------------------

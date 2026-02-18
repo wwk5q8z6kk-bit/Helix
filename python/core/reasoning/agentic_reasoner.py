@@ -119,7 +119,9 @@ class AgenticReasoner:
         resilient_reasoner: Optional[ResilientReasoner] = None,
         prm: Optional[ProcessRewardModel] = None,
         max_steps: int = 50,
-        reflection_frequency: int = 5
+        reflection_frequency: int = 5,
+        rust_bridge: Optional[Any] = None,
+        composio_bridge: Optional[Any] = None,
     ):
         """
         Initialize Agentic Reasoner
@@ -130,6 +132,8 @@ class AgenticReasoner:
             prm: Process reward model for quality assessment
             max_steps: Maximum steps before stopping
             reflection_frequency: Reflect every N steps
+            rust_bridge: Optional RustCoreBridge for retrieval via Rust core
+            composio_bridge: Optional ComposioBridge for external tool execution
         """
         self.tracker = tracker or get_trajectory_tracker()
         self.resilient_reasoner = resilient_reasoner or get_resilient_reasoner(self.tracker)
@@ -137,6 +141,8 @@ class AgenticReasoner:
 
         self.max_steps = max_steps
         self.reflection_frequency = reflection_frequency
+        self.rust_bridge = rust_bridge
+        self.composio_bridge = composio_bridge
 
         # Tool registry
         self.tools: Dict[str, ToolDefinition] = {}
@@ -484,28 +490,79 @@ class AgenticReasoner:
         step: ReasoningStep,
         context: Dict[str, Any]
     ) -> Any:
-        """Execute a tool"""
+        """Execute a tool by looking it up in the registered tool registry."""
+        # Try to extract tool name from step content
+        tool_name = self._extract_tool_name(step.content)
 
-        # Simulated tool execution
-        # In production, would select and execute actual tools
+        if tool_name and tool_name in self.tools:
+            try:
+                tool_def = self.tools[tool_name]
+                result = await tool_def.execute(step.content, context)
+                return {
+                    'status': 'success',
+                    'tool': tool_name,
+                    'output': result,
+                }
+            except Exception as exc:
+                return {
+                    'status': 'error',
+                    'tool': tool_name,
+                    'error': str(exc),
+                }
+
+        # No matching tool found
         return {
             'status': 'success',
-            'output': 'Tool executed successfully',
-            'simulated': True
+            'output': 'No matching tool found for step',
         }
+
+    @staticmethod
+    def _extract_tool_name(content: str) -> Optional[str]:
+        """Extract a tool name from step content.
+
+        Supports formats like ``tool:name``, ``use name``, or bare names.
+        """
+        if not content:
+            return None
+        lowered = content.strip().lower()
+        # "tool:name" or "tool: name"
+        if lowered.startswith("tool:"):
+            return content.strip()[5:].strip().split()[0] if len(content.strip()) > 5 else None
+        # "use <name>" prefix
+        if lowered.startswith("use "):
+            parts = content.strip().split()
+            return parts[1] if len(parts) > 1 else None
+        # Bare single-word content could be a tool name
+        parts = content.strip().split()
+        if len(parts) == 1:
+            return parts[0]
+        return None
 
     async def _execute_retrieval_step(
         self,
         step: ReasoningStep,
         context: Dict[str, Any]
     ) -> Any:
-        """Execute information retrieval"""
+        """Execute information retrieval via Rust bridge when available."""
+        if self.rust_bridge is not None:
+            try:
+                query = step.content or context.get("query", "")
+                results = await self.rust_bridge.search(query)
+                return {
+                    'status': 'success',
+                    'documents': results if isinstance(results, list) else [results],
+                }
+            except Exception as exc:
+                return {
+                    'status': 'error',
+                    'error': str(exc),
+                    'documents': [],
+                }
 
-        # Simulated retrieval
+        # Fallback stub when no bridge is available
         return {
             'status': 'success',
-            'documents': ['doc1', 'doc2'],
-            'simulated': True
+            'documents': [],
         }
 
     async def _execute_verification_step(

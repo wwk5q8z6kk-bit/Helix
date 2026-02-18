@@ -38,6 +38,7 @@ rand = { workspace = true }
 zeroize = { workspace = true }
 base64 = { workspace = true }
 libc = { workspace = true }
+lru = "0.12"
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio"] }

@@ -22,6 +22,14 @@ class HelixContainer:
         self._swarm_orchestrator = None
         self._reasoner = None
         self._feedback_handler = None
+        self._budget_tracker = None
+        self._composio_bridge = None
+        self._analytics_engine = None
+        self._report_generator = None
+        self._notification_service = None
+        self._scheduled_actions = None
+        self._resource_manager = None
+        self._source_registry = None
 
     @property
     def bridge(self):
@@ -53,8 +61,21 @@ class HelixContainer:
                     event_bus=self.event_bus,
                     memory_store=self.bridge,
                     llm_router=self.llm_router,
+                    rust_bridge=self.bridge,
+                    notification_service=self.notification_service,
                 )
-                logger.info("Orchestrator initialized")
+                # Register a general-purpose agent so execute_task() can find a handler
+                from core.orchestration.unified_orchestrator import AgentCapabilities, AgentRole, TaskType
+                general = AgentCapabilities(
+                    agent_id="general",
+                    role=AgentRole.DEVELOPMENT,
+                    skills={"general", "reasoning", "coding", "review", "testing"},
+                    task_types=set(TaskType),
+                    max_concurrent_tasks=5,
+                    performance_score=0.8,
+                )
+                self._orchestrator.register_agent("general", general)
+                logger.info("Orchestrator initialized with default agent")
             except Exception:
                 logger.exception("Failed to initialize orchestrator")
         return self._orchestrator
@@ -83,9 +104,95 @@ class HelixContainer:
     def reasoner(self):
         if self._reasoner is None:
             from core.reasoning.agentic_reasoner import AgenticReasoner
-            self._reasoner = AgenticReasoner()
+            try:
+                rb = self._bridge  # use already-created bridge; avoid recursive init
+                cb = self._composio_bridge
+            except Exception:
+                rb, cb = None, None
+            self._reasoner = AgenticReasoner(rust_bridge=rb, composio_bridge=cb)
             logger.info("AgenticReasoner initialized")
         return self._reasoner
+
+    @property
+    def budget_tracker(self):
+        if self._budget_tracker is None:
+            from core.middleware.budget_tracker import BudgetTracker
+            self._budget_tracker = BudgetTracker()
+            logger.info("BudgetTracker initialized")
+        return self._budget_tracker
+
+    @property
+    def resource_manager(self):
+        if self._resource_manager is None:
+            from core.scheduling.resource_manager import ResourceManager
+            orch = self.orchestrator
+            if orch is not None:
+                self._resource_manager = ResourceManager(
+                    scheduler=orch._scheduler,
+                    budget_tracker=self.budget_tracker,
+                )
+                # Inject back into orchestrator (breaks circular init)
+                orch._resource_manager = self._resource_manager
+                # Share breaker instances with LLM router (single source of truth)
+                self.llm_router.set_circuit_breakers(self._resource_manager._breakers)
+                logger.info("ResourceManager initialized and wired to orchestrator + router")
+        return self._resource_manager
+
+    @property
+    def source_registry(self):
+        if self._source_registry is None:
+            from core.sources import SourceRegistry
+            self._source_registry = SourceRegistry()
+            logger.info("SourceRegistry initialized")
+        return self._source_registry
+
+    @property
+    def composio_bridge(self):
+        if self._composio_bridge is None:
+            from core.composio.composio_bridge import ComposioBridge
+            self._composio_bridge = ComposioBridge()
+            logger.info("ComposioBridge initialized (mode=%s)", self._composio_bridge.tool_mode.value)
+        return self._composio_bridge
+
+    @property
+    def analytics_engine(self):
+        if self._analytics_engine is None:
+            from core.analytics.analytics_engine import AnalyticsEngine
+            self._analytics_engine = AnalyticsEngine()
+            # Inject into LLM router so usage is recorded automatically
+            self.llm_router.set_analytics(self._analytics_engine)
+            logger.info("AnalyticsEngine initialized and wired to LLM router")
+        return self._analytics_engine
+
+    @property
+    def report_generator(self):
+        if self._report_generator is None:
+            from core.analytics.report_generator import ReportGenerator
+            self._report_generator = ReportGenerator(
+                analytics_engine=self.analytics_engine,
+                llm_router=self.llm_router,
+            )
+            logger.info("ReportGenerator initialized")
+        return self._report_generator
+
+    @property
+    def notification_service(self):
+        if self._notification_service is None:
+            from core.notifications.notification_service import NotificationService
+            self._notification_service = NotificationService(bridge=self.bridge)
+            logger.info("NotificationService initialized with Rust bridge")
+        return self._notification_service
+
+    @property
+    def scheduled_actions(self):
+        if self._scheduled_actions is None:
+            from core.analytics.scheduled_actions import ScheduledActions
+            self._scheduled_actions = ScheduledActions(
+                bridge=self.bridge,
+                analytics_engine=self.analytics_engine,
+            )
+            logger.info("ScheduledActions initialized")
+        return self._scheduled_actions
 
     @property
     def feedback_handler(self):
@@ -137,6 +244,14 @@ class HelixContainer:
             "swarm_orchestrator": self._swarm_orchestrator is not None,
             "reasoner": self._reasoner is not None,
             "feedback_handler": self._feedback_handler is not None,
+            "budget_tracker": self._budget_tracker is not None,
+            "composio_bridge": self._composio_bridge is not None,
+            "analytics_engine": self._analytics_engine is not None,
+            "report_generator": self._report_generator is not None,
+            "notification_service": self._notification_service is not None,
+            "scheduled_actions": self._scheduled_actions is not None,
+            "resource_manager": self._resource_manager is not None,
+            "source_registry": self._source_registry is not None,
         }
 
 

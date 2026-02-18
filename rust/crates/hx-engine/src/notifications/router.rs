@@ -4,7 +4,7 @@ use chrono::{DateTime, Utc};
 use hx_core::MvResult;
 
 use super::alerts::AlertRuleStore;
-use super::{Notification, NotificationChannel, NotificationChannelType, Severity};
+use super::{Notification, NotificationChannel, NotificationChannelType};
 
 /// Routes notifications to appropriate channels based on alert rules.
 pub struct NotificationRouter {
@@ -145,6 +145,7 @@ mod tests {
     use super::*;
     use crate::notifications::alerts::{AlertCondition, AlertRule, QuietHours};
     use crate::notifications::channels::in_app::InAppChannel;
+    use crate::notifications::Severity;
 
     fn make_router_with_in_app() -> (Arc<InAppChannel>, NotificationRouter) {
         let store = Arc::new(AlertRuleStore::new());

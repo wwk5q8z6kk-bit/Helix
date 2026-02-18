@@ -29,6 +29,10 @@ def test_container_status_all_uninitialized():
         "bridge": False, "llm_router": False, "event_bus": False,
         "orchestrator": False, "learning_optimizer": False,
         "swarm_orchestrator": False, "reasoner": False, "feedback_handler": False,
+        "budget_tracker": False, "composio_bridge": False,
+        "analytics_engine": False, "report_generator": False,
+        "notification_service": False, "scheduled_actions": False,
+        "resource_manager": False, "source_registry": False,
     }
 
 

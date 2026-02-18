@@ -39,6 +39,18 @@ pub struct EngineConfig {
     pub keychain: KeychainConfig,
     #[serde(default)]
     pub ai_sidecar: AiSidecarConfig,
+    #[serde(default)]
+    pub sandbox: SandboxConfig,
+    #[serde(default)]
+    pub heartbeat: HeartbeatConfig,
+    #[serde(default)]
+    pub sources: SourcesConfig,
+    #[serde(default)]
+    pub workflow: WorkflowConfig,
+    #[serde(default)]
+    pub job_queue: JobQueueConfig,
+    #[serde(default)]
+    pub notifications: NotificationConfig,
 }
 
 /// Configuration for keychain lifecycle automation.
@@ -168,6 +180,56 @@ impl EncryptionConfig {
     }
 }
 
+/// Configuration for the filesystem sandbox.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SandboxConfig {
+    /// Whether the sandbox is enabled.
+    pub enabled: bool,
+    /// Sandbox root directory (defaults to HELIX_HOME).
+    pub root: String,
+    /// Sandbox level: read_only, supervised, full.
+    pub level: String,
+    /// Additional blocked path patterns.
+    #[serde(default)]
+    pub blocked_patterns: Vec<String>,
+    /// Browser domain allowlist for proxy operations.
+    #[serde(default)]
+    pub browser_domain_allowlist: Vec<String>,
+}
+
+impl Default for SandboxConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            root: shellexpand("~/.helix"),
+            level: "supervised".into(),
+            blocked_patterns: Vec::new(),
+            browser_domain_allowlist: Vec::new(),
+        }
+    }
+}
+
+/// Configuration for the heartbeat scheduler.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeartbeatConfig {
+    /// Whether the heartbeat scheduler is enabled.
+    pub enabled: bool,
+    /// Path to the HEARTBEAT.md file.
+    pub file_path: String,
+    /// How often to check for due tasks (seconds).
+    pub check_interval_secs: u64,
+}
+
+impl Default for HeartbeatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            file_path: shellexpand("~/.helix/HEARTBEAT.md"),
+            check_interval_secs: 60,
+        }
+    }
+}
+
 impl Default for EngineConfig {
     fn default() -> Self {
         let encryption = EncryptionConfig::default();
@@ -197,6 +259,12 @@ impl Default for EngineConfig {
             watcher: WatcherConfig::default(),
             keychain: KeychainConfig::default(),
             ai_sidecar: AiSidecarConfig::default(),
+            sandbox: SandboxConfig::default(),
+            heartbeat: HeartbeatConfig::default(),
+            sources: SourcesConfig::default(),
+            workflow: WorkflowConfig::default(),
+            job_queue: JobQueueConfig::default(),
+            notifications: NotificationConfig::default(),
         }
     }
 }
@@ -629,6 +697,84 @@ impl Default for PlanningConfig {
             enabled: false,
             max_steps: 10,
             require_approval: true,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10-16 Config Sections
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourcesConfig {
+    pub enabled: bool,
+    pub default_poll_interval_secs: u64,
+}
+
+impl Default for SourcesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            default_poll_interval_secs: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkflowConfig {
+    pub enabled: bool,
+    pub workflows_dir: String,
+    pub max_concurrent: usize,
+    pub default_timeout_secs: u64,
+}
+
+impl Default for WorkflowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            workflows_dir: shellexpand("~/.helix/workflows"),
+            max_concurrent: 4,
+            default_timeout_secs: 300,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobQueueConfig {
+    pub enabled: bool,
+    pub db_path: String,
+    pub worker_concurrency: usize,
+    pub poll_interval_ms: u64,
+    pub max_retries: u32,
+    pub retention_days: u32,
+}
+
+impl Default for JobQueueConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            db_path: shellexpand("~/.helix/data/jobs.db"),
+            worker_concurrency: 4,
+            poll_interval_ms: 1000,
+            max_retries: 3,
+            retention_days: 30,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NotificationConfig {
+    pub enabled: bool,
+    pub max_in_app: usize,
+    pub default_cooldown_secs: u64,
+}
+
+impl Default for NotificationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_in_app: 1000,
+            default_cooldown_secs: 300,
         }
     }
 }

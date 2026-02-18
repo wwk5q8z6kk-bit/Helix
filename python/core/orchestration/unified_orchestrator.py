@@ -59,10 +59,30 @@ from core.interfaces import (
 )
 from core.exceptions_unified import (
     AgentError,
+    DependencyResolutionError,
     OrchestratorError,
     TaskExecutionError,
     ValidationError,
 )
+from core.scheduling.dependency_resolver import (
+    CycleDetectedError,
+    DependencyResolver,
+    TaskState as DepTaskState,
+)
+from core.scheduling.execution_tracker import ExecutionTracker
+from core.scheduling.quality_gates import (
+    GateVerdict,
+    QualityGatePolicy,
+    GATE_STANDARD,
+)
+from core.scheduling.scheduler_coordinator import SchedulerCoordinator
+from core.middleware.budget_tracker import BudgetAction
+from core.scheduling.resource_manager import ResourceManager
+from core.scheduling.retry_strategies import (
+    RetryManager,
+    RetryReason,
+)
+from core.notifications.notification_service import NotificationService, Severity
 
 try:  # Optional dependency for context enrichment
     from core.brain.universal_context_engine import get_universal_context_engine
@@ -127,6 +147,14 @@ class TaskPriority(str, Enum):
     HIGH = "high"
     MEDIUM = "medium"
     LOW = "low"
+
+
+_PRIORITY_TO_INT: Dict[TaskPriority, int] = {
+    TaskPriority.CRITICAL: 0,
+    TaskPriority.HIGH: 1,
+    TaskPriority.MEDIUM: 2,
+    TaskPriority.LOW: 3,
+}
 
 
 class WorkflowPhase(str, Enum):
@@ -389,6 +417,62 @@ class WorkflowState:
     architecture_decisions: List[Dict[str, Any]] = field(default_factory=list)
 
 
+class WorkflowExecutionStatus(str, Enum):
+    """Status of a DAG workflow execution."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class WorkflowExecution:
+    """Tracks a running DAG workflow execution."""
+
+    execution_id: str
+    workflow_name: str
+    status: WorkflowExecutionStatus = WorkflowExecutionStatus.PENDING
+    task_ids: List[str] = field(default_factory=list)
+    task_results: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+
+    total_cost: float = 0.0
+    total_tokens: int = 0
+
+    error: Optional[str] = None
+
+    @property
+    def duration(self) -> Optional[float]:
+        if self.started_at and self.completed_at:
+            return (self.completed_at - self.started_at).total_seconds()
+        return None
+
+    @property
+    def progress(self) -> float:
+        if not self.task_ids:
+            return 0.0
+        return len(self.task_results) / len(self.task_ids)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "execution_id": self.execution_id,
+            "workflow_name": self.workflow_name,
+            "status": self.status.value,
+            "task_ids": self.task_ids,
+            "task_results": self.task_results,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "duration": self.duration,
+            "progress": self.progress,
+            "total_cost": self.total_cost,
+            "total_tokens": self.total_tokens,
+            "error": self.error,
+        }
+
+
 @dataclass
 class ConditionActionRule:
     """CEP (Complex Event Processing) rule for autonomous reactions.
@@ -516,6 +600,7 @@ class UnifiedOrchestrator:
         memory_store: IMemoryStore,
         llm_router: Optional[ILLMRouter] = None,
         tool_selector: Optional[IToolSelector] = None,
+        rust_bridge: Optional[Any] = None,
     ):
         """Initialize unified orchestrator with dependencies.
 
@@ -524,6 +609,7 @@ class UnifiedOrchestrator:
             memory_store: Persistent storage for state
             llm_router: Optional LLM routing for agent execution
             tool_selector: Optional tool selection for agents
+            rust_bridge: Optional RustCoreBridge for Rust-delegated scheduling
         """
         # Core dependencies (required)
         self.event_bus = event_bus
@@ -532,6 +618,13 @@ class UnifiedOrchestrator:
         # Optional dependencies
         self.llm_router = llm_router
         self.tool_selector = tool_selector
+
+        # Rust-delegated scheduling: when the Rust core is reachable, DAG
+        # operations (submit, ready-check, complete, fail) are routed through
+        # the Rust scheduler REST API.  The Python-side DependencyResolver
+        # serves as fallback when the bridge is unavailable.
+        self._rust_bridge = rust_bridge
+        self._use_rust_scheduler: bool = False
 
         # Agent management
         self.agents: Dict[str, AgentState] = {}
@@ -542,6 +635,30 @@ class UnifiedOrchestrator:
         self.task_queues: Dict[TaskPriority, List[str]] = {
             priority: [] for priority in TaskPriority
         }
+
+        # Dependency resolver (DAG-based scheduling)
+        self._dep_resolver = DependencyResolver()
+        # Completed task history (retained for queries; capped on persist)
+        self._completed_tasks: Dict[str, Task] = {}
+        # Workflow executions (DAG-based workflow runs)
+        self._workflow_executions: Dict[str, WorkflowExecution] = {}
+        # Local workflow definitions (Python fallback; Rust stores its own)
+        self._stored_workflows: Dict[str, Dict[str, Any]] = {}
+        # Notification service for workflow lifecycle events
+        self._notification_service: Optional[NotificationService] = None
+        # Execution intelligence (duration/cost/quality tracking)
+        self._exec_tracker = ExecutionTracker()
+        # Quality gates (dependency quality thresholds)
+        self._quality_policy = QualityGatePolicy()
+        # Adaptive retry with model escalation
+        self._retry_manager = RetryManager()
+        # Unified scheduler coordinator (ties all scheduling modules together)
+        self._scheduler = SchedulerCoordinator(
+            self._dep_resolver, self._exec_tracker,
+            self._quality_policy, self._retry_manager,
+        )
+        # Production safety layer (injected externally; None = disabled)
+        self._resource_manager: Optional[ResourceManager] = None
 
         # Workflow management
         self.workflows: Dict[str, WorkflowState] = {}
@@ -574,8 +691,12 @@ class UnifiedOrchestrator:
         self._settings: Optional[Any] = None
 
         self._initialize_context_engine()
+        self._detect_rust_scheduler()
 
-        logger.info("UnifiedOrchestrator initialized")
+        logger.info(
+            "UnifiedOrchestrator initialized (rust_scheduler=%s)",
+            self._use_rust_scheduler,
+        )
 
     def _initialize_context_engine(self) -> None:
         """Configure the universal context engine when available."""
@@ -601,6 +722,44 @@ class UnifiedOrchestrator:
             self.context_engine = None
             self.context_enrichment_enabled = False
             logger.warning("Failed to initialise UniversalContextEngine: %s", exc)
+
+    def _detect_rust_scheduler(self) -> None:
+        """Enable Rust-delegated scheduling if a bridge with scheduler methods is available."""
+        bridge = self._rust_bridge
+        if bridge is None:
+            return
+        # Duck-type check: the bridge must expose the scheduler REST methods.
+        required = (
+            "scheduler_submit_task",
+            "scheduler_ready_tasks",
+            "scheduler_mark_running",
+            "scheduler_mark_completed",
+            "scheduler_mark_failed",
+            "scheduler_task_state",
+        )
+        if all(callable(getattr(bridge, m, None)) for m in required):
+            self._use_rust_scheduler = True
+            logger.info("Rust scheduler delegation enabled via bridge")
+        else:
+            logger.debug("Bridge lacks scheduler methods — using Python scheduler")
+
+    async def enable_rust_scheduler(self) -> bool:
+        """Attempt to enable Rust scheduling at runtime by health-checking the bridge.
+
+        Returns True if the Rust scheduler is now active.
+        """
+        if self._use_rust_scheduler:
+            return True
+        bridge = self._rust_bridge
+        if bridge is None:
+            return False
+        try:
+            healthy = await bridge.is_healthy()
+            if healthy:
+                self._detect_rust_scheduler()
+            return self._use_rust_scheduler
+        except Exception:
+            return False
 
     @property
     def degraded_mode(self) -> bool:
@@ -795,6 +954,13 @@ class UnifiedOrchestrator:
             "total_rules_triggered": self.total_rules_triggered,
             "uptime_seconds": uptime_seconds,
             "events_per_second": events_per_second,
+            "dependency_graph": self._dep_resolver.stats,
+            "execution_intelligence": self._exec_tracker.stats,
+            "retry_manager": self._retry_manager.stats,
+            "scheduler_coordinator": self._scheduler.stats,
+            "resource_manager": self._resource_manager.stats if self._resource_manager else None,
+            "completed_history_size": len(self._completed_tasks),
+            "rust_scheduler_active": self._use_rust_scheduler,
         }
 
     def get_macos_display(self) -> Dict[str, str]:
@@ -950,6 +1116,665 @@ class UnifiedOrchestrator:
                     await result
             except Exception:
                 logger.debug("Progress callback error for task %s", task_id)
+
+    # ------------------------------------------------------------------ #
+    # DEPENDENCY-AWARE TASK SUBMISSION
+    # ------------------------------------------------------------------ #
+
+    async def submit_task(self, task: Task) -> str:
+        """Register a task in the dependency resolver and dispatch if ready.
+
+        This is the dependency-aware entry point.  Tasks whose dependencies
+        are all satisfied are dispatched immediately; others wait until their
+        prerequisites complete.
+
+        When Rust-delegated scheduling is active, the DAG submit is routed
+        through the Rust core REST API.  Otherwise the local Python
+        DependencyResolver handles it.
+
+        Returns the task_id.
+        Raises DependencyResolutionError on cycles.
+        """
+        priority_int = _PRIORITY_TO_INT.get(task.priority, 2)
+
+        if self._use_rust_scheduler:
+            initial_state_str = await self._rust_submit_task(
+                task.task_id, task.dependencies or [], priority_int,
+            )
+            self.tasks[task.task_id] = task
+            self.metrics["tasks_received"] += 1
+
+            if initial_state_str == "cancelled":
+                task.status = TaskStatus.CANCELLED
+                logger.info("Task %s auto-cancelled (Rust scheduler)", task.task_id)
+                return task.task_id
+
+            if initial_state_str == "ready":
+                await self._dispatch_ready_tasks()
+            return task.task_id
+
+        # --- Python fallback path ---
+        try:
+            initial_state = self._dep_resolver.add_task(
+                task.task_id,
+                dependencies=task.dependencies or None,
+                priority=priority_int,
+            )
+        except CycleDetectedError as exc:
+            raise DependencyResolutionError(
+                f"Dependency cycle detected for task {task.task_id!r}: {exc}"
+            ) from exc
+
+        self.tasks[task.task_id] = task
+        self.metrics["tasks_received"] += 1
+
+        if initial_state == DepTaskState.CANCELLED:
+            task.status = TaskStatus.CANCELLED
+            logger.info("Task %s auto-cancelled (failed upstream dependency)", task.task_id)
+            return task.task_id
+
+        if initial_state == DepTaskState.READY:
+            await self._dispatch_ready_tasks()
+
+        return task.task_id
+
+    async def submit_tasks(self, tasks: List[Task]) -> List[str]:
+        """Batch-submit tasks with atomic rollback on failure.
+
+        If any task fails validation (e.g. cycle), all tasks added in this
+        batch are rolled back from the resolver.
+        """
+        added: List[str] = []
+        try:
+            for task in tasks:
+                priority_int = _PRIORITY_TO_INT.get(task.priority, 2)
+
+                if self._use_rust_scheduler:
+                    await self._rust_submit_task(
+                        task.task_id, task.dependencies or [], priority_int,
+                    )
+                else:
+                    try:
+                        self._dep_resolver.add_task(
+                            task.task_id,
+                            dependencies=task.dependencies or None,
+                            priority=priority_int,
+                        )
+                    except CycleDetectedError as exc:
+                        raise DependencyResolutionError(
+                            f"Dependency cycle detected for task {task.task_id!r}: {exc}"
+                        ) from exc
+
+                added.append(task.task_id)
+                self.tasks[task.task_id] = task
+        except DependencyResolutionError:
+            # Rollback all tasks added in this batch
+            for tid in added:
+                if self._use_rust_scheduler:
+                    # Rust has no explicit remove — completed/failed handle cleanup
+                    pass
+                else:
+                    self._dep_resolver.remove_task(tid)
+                self.tasks.pop(tid, None)
+            raise
+
+        self.metrics["tasks_received"] += len(added)
+        await self._dispatch_ready_tasks()
+        return added
+
+    async def _dispatch_ready_tasks(self) -> None:
+        """Check the resolver for READY tasks and fire them."""
+        if self._use_rust_scheduler:
+            ready_ids = await self._rust_bridge.scheduler_ready_tasks()
+        else:
+            ready_ids = self._dep_resolver.get_ready_tasks()
+
+        for task_id in ready_ids:
+            task = self.tasks.get(task_id)
+            if task is None:
+                continue
+
+            # Resource gate: circuit breaker + concurrency check
+            if self._resource_manager is not None:
+                provider = getattr(task, "assigned_agent_id", "default") or "default"
+                if not self._resource_manager.provider_available(provider):
+                    logger.warning("Circuit open for %s — skipping %s", provider, task_id)
+                    continue
+                if not self._resource_manager.acquire(provider):
+                    logger.info("Concurrency full for %s — deferring %s", provider, task_id)
+                    continue
+
+            if self._use_rust_scheduler:
+                await self._rust_bridge.scheduler_mark_running(task_id)
+            else:
+                self._dep_resolver.mark_running(task_id)
+            task.status = TaskStatus.IN_PROGRESS
+            asyncio.create_task(self._execute_and_resolve(task))
+
+    async def _execute_and_resolve(self, task: Task) -> None:
+        """Execute a task with quality gates, tracking, and adaptive retry.
+
+        Flow:
+        1. Budget pre-check (if resource manager active)
+        2. Record start in execution tracker
+        3. Execute the task
+        4. Evaluate quality gate on the result
+        5. If gate says RETRY → adaptive retry with model escalation
+        6. If gate says PASSED → mark completed, dispatch downstream
+        7. On hard failure → check retry manager → propagate if exhausted
+        8. Always: release concurrency slot + record breaker outcome
+        """
+        task_type_str = task.task_type.value if hasattr(task.task_type, "value") else str(task.task_type)
+        model_used = "unknown"  # Updated by result metadata
+        provider_tag = getattr(task, "assigned_agent_id", "default") or "default"
+
+        # Track execution start
+        self._exec_tracker.record_start(task.task_id)
+
+        try:
+            # Budget pre-check
+            if self._resource_manager is not None:
+                budget_action = self._resource_manager.check_budget(provider_tag, 0.01)
+                if budget_action == BudgetAction.REJECT:
+                    raise TaskExecutionError(f"Budget exceeded for provider {provider_tag}")
+
+            result = await self.execute_task(task)
+            model_used = result.metadata.get("provider", model_used)
+
+            # Record completion in tracker
+            self._exec_tracker.record_completion(
+                task_id=task.task_id,
+                task_type=task_type_str,
+                model=model_used,
+                quality_score=result.quality_score,
+                hrm_score=result.hrm_score,
+                tokens_used=result.tokens_used,
+                cost=result.cost,
+                agent_id=result.agent_id,
+                attempt=task.retry_count + 1,
+            )
+
+            # Record success in circuit breaker
+            if self._resource_manager is not None:
+                self._resource_manager.record_success(provider_tag)
+                tokens = result.tokens_used or 0
+                self._resource_manager.record_spend(
+                    provider_tag, tokens, max(tokens // 3, 1), task_type_str,
+                )
+
+            # Evaluate quality gate
+            downstream = list(self._dep_resolver._dependents.get(task.task_id, set()))
+            gate_result = self._quality_policy.evaluate(
+                task_id=task.task_id,
+                quality_score=result.quality_score,
+                hrm_score=result.hrm_score,
+                downstream_ids=downstream or None,
+            )
+
+            if gate_result.verdict == GateVerdict.RETRY:
+                # Quality too low — try adaptive retry with model escalation
+                decision = self._retry_manager.on_failure(
+                    task_id=task.task_id,
+                    reason=RetryReason.LOW_QUALITY,
+                    quality_score=result.quality_score,
+                    current_model=model_used,
+                )
+                if decision.should_retry:
+                    logger.info(
+                        "Quality gate retry for %s: %s (model: %s)",
+                        task.task_id, decision.message, decision.model or model_used,
+                    )
+                    task.retry_count += 1
+                    # Re-mark as READY in resolver so dispatch picks it up
+                    await self._resolver_requeue(task.task_id)
+                    await self._dispatch_ready_tasks()
+                    return
+                # Exhausted retries — fall through to WARN_PASS behaviour
+                logger.warning(
+                    "Quality gate exhausted retries for %s — accepting result",
+                    task.task_id,
+                )
+
+            if gate_result.verdict == GateVerdict.FAILED:
+                # Quality gate says treat as hard failure
+                raise TaskExecutionError(
+                    f"Quality gate failed for {task.task_id}: {gate_result.reason}"
+                )
+
+            # PASSED or WARN_PASS — mark completed, dispatch downstream
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now()
+            newly_ready = await self._resolver_mark_completed(task.task_id)
+            self._completed_tasks[task.task_id] = task
+            self._retry_manager.reset(task.task_id)
+            self._quality_policy.reset_attempts(task.task_id)
+            if newly_ready:
+                logger.info(
+                    "Task %s completed (q=%.2f) — unblocked: %s",
+                    task.task_id, result.quality_score,
+                    ", ".join(newly_ready),
+                )
+                await self._dispatch_ready_tasks()
+
+        except Exception as exc:
+            logger.error("Task %s failed: %s", task.task_id, exc)
+
+            # Record failure in circuit breaker
+            if self._resource_manager is not None:
+                self._resource_manager.record_failure(provider_tag)
+
+            # Record failure in tracker
+            self._exec_tracker.record_failure(
+                task_id=task.task_id,
+                task_type=task_type_str,
+                model=model_used,
+                agent_id=task.assigned_agent_id,
+                attempt=task.retry_count + 1,
+            )
+
+            # Check adaptive retry
+            decision = self._retry_manager.on_failure(
+                task_id=task.task_id,
+                reason=RetryReason.EXECUTION_FAILURE,
+                current_model=model_used,
+            )
+            if decision.should_retry:
+                logger.info(
+                    "Adaptive retry for %s: %s",
+                    task.task_id, decision.message,
+                )
+                task.retry_count += 1
+                # Re-mark as READY for dispatch
+                await self._resolver_requeue(task.task_id)
+                await self._dispatch_ready_tasks()
+                return
+
+            # Exhausted retries — propagate failure
+            task.status = TaskStatus.FAILED
+            task.error = str(exc)
+            task.completed_at = datetime.now()
+            cancelled = await self._resolver_mark_failed(task.task_id)
+            if cancelled:
+                for cid in cancelled:
+                    cancelled_task = self.tasks.get(cid)
+                    if cancelled_task:
+                        cancelled_task.status = TaskStatus.CANCELLED
+                logger.info(
+                    "Task %s failure propagated — cancelled: %s",
+                    task.task_id,
+                    ", ".join(cancelled),
+                )
+        finally:
+            # Always release the concurrency slot
+            if self._resource_manager is not None:
+                self._resource_manager.release(provider_tag)
+
+    # ------------------------------------------------------------------ #
+    # RUST / PYTHON RESOLVER BRIDGE HELPERS
+    # ------------------------------------------------------------------ #
+
+    async def _rust_submit_task(
+        self, task_id: str, dependencies: List[str], priority: int,
+    ) -> str:
+        """Submit a task via the Rust scheduler REST API.
+
+        Returns the initial state string (e.g. 'ready', 'blocked', 'cancelled').
+        Raises DependencyResolutionError on failure (e.g. cycle detected).
+        """
+        result = await self._rust_bridge.scheduler_submit_task(
+            task_id, dependencies=dependencies, priority=priority,
+        )
+        if result is None:
+            raise DependencyResolutionError(
+                f"Rust scheduler rejected task {task_id!r}"
+            )
+        return result.get("state", "blocked").lower()
+
+    async def _resolver_mark_completed(self, task_id: str) -> List[str]:
+        """Mark task completed in the active resolver (Rust or Python)."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_mark_completed(task_id)
+        return self._dep_resolver.mark_completed(task_id)
+
+    async def _resolver_mark_failed(self, task_id: str) -> List[str]:
+        """Mark task failed in the active resolver (Rust or Python)."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_mark_failed(task_id)
+        try:
+            return self._dep_resolver.mark_failed(task_id)
+        except ValueError:
+            return []
+
+    async def _resolver_requeue(self, task_id: str) -> None:
+        """Re-mark a task as READY for retry dispatch."""
+        if self._use_rust_scheduler:
+            # Rust scheduler doesn't have a "requeue" endpoint; re-submit works
+            # because the task is still in the DAG.  For now we just call
+            # mark_running again after _dispatch_ready_tasks picks it up.
+            # The task stays in the DAG as "running" until dispatch re-marks it.
+            pass
+        else:
+            self._dep_resolver._states[task_id] = DepTaskState.READY
+
+    # ------------------------------------------------------------------ #
+    # WORKFLOW LIFECYCLE (Rust-delegated when available)
+    # ------------------------------------------------------------------ #
+
+    async def define_workflow(
+        self,
+        name: str,
+        tasks: List[Dict[str, Any]],
+        deadline: Optional[float] = None,
+        budget: Optional[float] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Define a DAG workflow.  Delegates to Rust scheduler when active.
+
+        Args:
+            name: Workflow name (unique key).
+            tasks: List of task dicts with keys: task_id, task_type,
+                   depends_on (list), priority (int), model (optional).
+            deadline: Optional deadline (Unix timestamp).
+            budget: Optional budget cap (dollars).
+
+        Returns:
+            Workflow definition dict on success, None on failure.
+        """
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_define_workflow(
+                name=name, tasks=tasks, deadline=deadline, budget=budget,
+            )
+
+        # Python fallback: use the local SchedulerCoordinator via WorkflowBuilder
+        from core.scheduling.workflow_builder import WorkflowBuilder
+        builder = WorkflowBuilder(name, coordinator=self._scheduler)
+        for t in tasks:
+            builder = builder.task(
+                t["task_id"],
+                task_type=t.get("task_type", "planning"),
+                depends_on=t.get("depends_on"),
+                model=t.get("model"),
+                priority=t.get("priority", 2),
+            )
+        if deadline is not None:
+            builder = builder.with_deadline(deadline)
+        if budget is not None:
+            builder = builder.with_budget(budget)
+        try:
+            defn = builder.build()
+            result = {
+                "name": defn.name,
+                "task_count": defn.task_count,
+                "wave_count": defn.wave_count,
+                "max_parallelism": defn.max_parallelism,
+                "task_order": defn.task_order,
+                "waves": defn.waves,
+                "tasks": tasks,  # preserve original definitions for run_workflow
+            }
+            self._stored_workflows[name] = result
+            return result
+        except Exception as exc:
+            logger.error("define_workflow failed: %s", exc)
+            return None
+
+    async def preview_workflow(self, name: str) -> Optional[Dict[str, Any]]:
+        """Preview a stored workflow with predictive analysis.
+
+        Returns prediction metrics including cost, duration, risk, and
+        whether constraints (deadline/budget) will be met.
+        """
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_preview_workflow(name)
+        return None  # Python preview requires re-building — handled by WorkflowBuilder directly
+
+    async def list_workflows(self) -> List[Dict[str, Any]]:
+        """List all stored workflow definitions."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_list_workflows()
+        return list(self._stored_workflows.values())
+
+    async def get_workflow(self, name: str) -> Optional[Dict[str, Any]]:
+        """Get a specific workflow definition by name."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_get_workflow(name)
+        return self._stored_workflows.get(name)
+
+    async def delete_workflow(self, name: str) -> bool:
+        """Delete a stored workflow."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_delete_workflow(name)
+        return self._stored_workflows.pop(name, None) is not None
+
+    async def list_workflow_templates(self) -> List[str]:
+        """List pre-built workflow template names."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_list_templates()
+        return ["code_review_pipeline", "research_pipeline", "parallel_analysis_pipeline"]
+
+    async def preview_template(self, name: str) -> Optional[Dict[str, Any]]:
+        """Preview a pre-built workflow template."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_preview_template(name)
+        return None
+
+    async def scheduler_stats(self) -> Dict[str, Any]:
+        """Get scheduler statistics from the active backend."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_stats()
+        return self._scheduler.stats
+
+    async def execution_waves(self) -> List[List[str]]:
+        """Get execution waves (parallel groups in topological order)."""
+        if self._use_rust_scheduler:
+            return await self._rust_bridge.scheduler_execution_waves()
+        return self._dep_resolver.get_execution_waves()
+
+    # ------------------------------------------------------------------ #
+    # WORKFLOW EXECUTION
+    # ------------------------------------------------------------------ #
+
+    async def run_workflow(
+        self,
+        name: str,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowExecution:
+        """Execute a stored workflow definition.
+
+        Loads the workflow, creates Task objects from its task definitions,
+        and submits them all via submit_tasks() so the DAG resolver handles
+        dependency ordering and parallel dispatch.
+
+        Each task's on_complete callback updates the WorkflowExecution state.
+        When all tasks finish, the execution is marked complete.
+
+        Args:
+            name: Name of a previously-defined workflow.
+            context: Extra context passed to each task.
+
+        Returns:
+            WorkflowExecution with live status tracking.
+
+        Raises:
+            ValueError: If workflow name not found.
+        """
+        # Load workflow definition
+        defn = await self.get_workflow(name)
+        if defn is None:
+            raise ValueError(f"Workflow '{name}' not found")
+
+        execution_id = f"wfx-{uuid.uuid4().hex[:12]}"
+        task_defs = defn.get("tasks", defn.get("task_order", []))
+
+        # Build the task map from the definition
+        # task_defs can be list of dicts (from define) or list of strings (task_order)
+        if task_defs and isinstance(task_defs[0], str):
+            # task_order style: just task IDs, need to reconstruct deps from waves
+            waves = defn.get("waves", [])
+            task_dict_list = []
+            completed_ids: Set[str] = set()
+            for wave in waves:
+                for tid in wave:
+                    task_dict_list.append({
+                        "task_id": tid,
+                        "task_type": "planning",
+                        "depends_on": list(completed_ids),
+                    })
+                completed_ids.update(wave)
+            task_defs = task_dict_list
+
+        # Create execution tracker
+        wf_exec = WorkflowExecution(
+            execution_id=execution_id,
+            workflow_name=name,
+            status=WorkflowExecutionStatus.RUNNING,
+            started_at=datetime.now(),
+        )
+
+        # Map task_type strings to TaskType enum
+        _TASK_TYPE_MAP = {t.value: t for t in TaskType}
+
+        tasks: List[Task] = []
+        for tdef in task_defs:
+            tid = tdef["task_id"] if isinstance(tdef, dict) else tdef
+            ttype_str = tdef.get("task_type", "planning") if isinstance(tdef, dict) else "planning"
+            ttype = _TASK_TYPE_MAP.get(ttype_str, TaskType.PLANNING)
+            deps = tdef.get("depends_on", []) if isinstance(tdef, dict) else []
+            priority_int = tdef.get("priority", 2) if isinstance(tdef, dict) else 2
+            priority_map = {0: TaskPriority.CRITICAL, 1: TaskPriority.HIGH, 2: TaskPriority.MEDIUM, 3: TaskPriority.LOW}
+            priority = priority_map.get(priority_int, TaskPriority.MEDIUM)
+
+            # Namespace task IDs to avoid collisions with other submissions
+            namespaced_id = f"{execution_id}:{tid}"
+            namespaced_deps = [f"{execution_id}:{d}" for d in deps]
+
+            task = Task(
+                task_id=namespaced_id,
+                task_type=ttype,
+                description=f"Workflow '{name}' task: {tid}",
+                priority=priority,
+                dependencies=namespaced_deps,
+                context={**(context or {}), "workflow_execution_id": execution_id, "workflow_task_id": tid},
+            )
+            tasks.append(task)
+            wf_exec.task_ids.append(namespaced_id)
+
+        self._workflow_executions[execution_id] = wf_exec
+
+        # Submit all tasks — the resolver handles ordering and dispatch
+        await self.submit_tasks(tasks)
+
+        # Start a background watcher that finalizes the execution
+        asyncio.create_task(self._watch_workflow_execution(execution_id))
+
+        await self.event_bus.publish(
+            EventType.WORKFLOW_PROGRESS,
+            {"execution_id": execution_id, "workflow_name": name, "task_count": len(tasks), "phase": "started"},
+            source="orchestrator",
+        )
+
+        return wf_exec
+
+    async def _watch_workflow_execution(self, execution_id: str) -> None:
+        """Background watcher that polls for workflow completion.
+
+        Emits incremental WORKFLOW_PROGRESS events each cycle so SSE clients
+        can track task-by-task progress without polling the REST API.
+        """
+        wf_exec = self._workflow_executions.get(execution_id)
+        if wf_exec is None:
+            return
+
+        prev_progress = 0.0
+
+        while wf_exec.status == WorkflowExecutionStatus.RUNNING:
+            await asyncio.sleep(0.5)
+
+            all_done = True
+            has_failure = False
+            for tid in wf_exec.task_ids:
+                task = self.tasks.get(tid)
+                if task is None:
+                    continue
+                if task.status == TaskStatus.COMPLETED:
+                    if tid not in wf_exec.task_results:
+                        wf_exec.task_results[tid] = {
+                            "status": "completed",
+                            "quality_score": task.quality_score,
+                            "duration": task.duration,
+                        }
+                        wf_exec.total_tokens += getattr(task.result or {}, "get", lambda k, d: d)("tokens_used", 0)
+                elif task.status == TaskStatus.FAILED:
+                    has_failure = True
+                    wf_exec.task_results[tid] = {"status": "failed", "error": task.error}
+                elif task.status == TaskStatus.CANCELLED:
+                    wf_exec.task_results[tid] = {"status": "cancelled"}
+                else:
+                    all_done = False
+
+            # Emit incremental progress if it changed
+            current_progress = wf_exec.progress
+            if current_progress != prev_progress:
+                prev_progress = current_progress
+                await self.event_bus.publish(
+                    EventType.WORKFLOW_PROGRESS,
+                    {
+                        "execution_id": execution_id,
+                        "workflow_name": wf_exec.workflow_name,
+                        "phase": "progress",
+                        "percent": round(current_progress * 100, 1),
+                        "completed_tasks": len(wf_exec.task_results),
+                        "total_tasks": len(wf_exec.task_ids),
+                    },
+                    source="orchestrator",
+                )
+
+            if all_done:
+                wf_exec.completed_at = datetime.now()
+                if has_failure:
+                    wf_exec.status = WorkflowExecutionStatus.FAILED
+                    wf_exec.error = "One or more tasks failed"
+                else:
+                    wf_exec.status = WorkflowExecutionStatus.COMPLETED
+
+                await self.event_bus.publish(
+                    EventType.WORKFLOW_PROGRESS,
+                    {**wf_exec.to_dict(), "phase": "completed" if not has_failure else "failed"},
+                    source="orchestrator",
+                )
+
+    async def cancel_workflow_execution(self, execution_id: str) -> bool:
+        """Cancel a running workflow execution.
+
+        Cancels all pending/in-progress tasks for this workflow.
+        """
+        wf_exec = self._workflow_executions.get(execution_id)
+        if wf_exec is None or wf_exec.status != WorkflowExecutionStatus.RUNNING:
+            return False
+
+        for tid in wf_exec.task_ids:
+            task = self.tasks.get(tid)
+            if task and task.status in (TaskStatus.PENDING, TaskStatus.QUEUED, TaskStatus.IN_PROGRESS):
+                task.status = TaskStatus.CANCELLED
+                wf_exec.task_results[tid] = {"status": "cancelled"}
+
+        wf_exec.status = WorkflowExecutionStatus.CANCELLED
+        wf_exec.completed_at = datetime.now()
+        return True
+
+    def get_workflow_execution(self, execution_id: str) -> Optional[Dict[str, Any]]:
+        """Get a workflow execution by ID."""
+        wf_exec = self._workflow_executions.get(execution_id)
+        return wf_exec.to_dict() if wf_exec else None
+
+    def list_workflow_executions(
+        self, status: Optional[str] = None, limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List workflow executions, optionally filtered by status."""
+        execs = list(self._workflow_executions.values())
+        if status:
+            execs = [e for e in execs if e.status.value == status]
+        # Most recent first
+        execs.sort(key=lambda e: e.started_at or datetime.min, reverse=True)
+        return [e.to_dict() for e in execs[:limit]]
 
     async def execute_task(
         self,
@@ -1420,23 +2245,122 @@ class UnifiedOrchestrator:
     async def _review_security(
         self, code: str, language: str
     ) -> List[Dict[str, Any]]:
-        """Run security analysis (stub - implement with actual scanner)."""
-        # This would integrate with actual security scanner
-        return []
+        """Run security analysis via LLM."""
+        return await self._llm_review(
+            code, language,
+            concern="security",
+            prompt_prefix=(
+                "Analyze the following code for security vulnerabilities. "
+                "Look for: injection flaws, authentication issues, data exposure, "
+                "insecure defaults, and OWASP Top 10 concerns."
+            ),
+        )
 
     async def _review_performance(
         self, code: str, language: str
     ) -> List[Dict[str, Any]]:
-        """Run performance analysis (stub - implement with actual analyzer)."""
-        # This would integrate with actual performance analyzer
-        return []
+        """Run performance analysis via LLM."""
+        return await self._llm_review(
+            code, language,
+            concern="performance",
+            prompt_prefix=(
+                "Analyze the following code for performance issues. "
+                "Look for: unnecessary allocations, O(n^2) or worse algorithms, "
+                "blocking calls, missing caching opportunities, and memory leaks."
+            ),
+        )
 
     async def _review_quality(
         self, code: str, language: str
     ) -> List[Dict[str, Any]]:
-        """Run quality checks (stub - implement with actual checker)."""
-        # This would integrate with actual quality checker
-        return []
+        """Run code quality analysis via LLM."""
+        return await self._llm_review(
+            code, language,
+            concern="quality",
+            prompt_prefix=(
+                "Analyze the following code for quality issues. "
+                "Look for: code duplication, poor naming, missing error handling, "
+                "overly complex functions, and violations of SOLID principles."
+            ),
+        )
+
+    async def _llm_review(
+        self,
+        code: str,
+        language: str,
+        concern: str,
+        prompt_prefix: str,
+    ) -> List[Dict[str, Any]]:
+        """Shared helper: ask the LLM router to review code for a specific concern."""
+        if self.llm_router is None:
+            return []
+
+        try:
+            from core.llm.intelligent_llm_router import TaskType as LLMTaskType
+
+            provider = await self.llm_router.select_provider(
+                task_type=LLMTaskType.CODE_GENERATION,
+                prompt_tokens=len(code.split()),
+            )
+
+            prompt = (
+                f"{prompt_prefix}\n\n"
+                f"Language: {language}\n\n"
+                f"```{language}\n{code}\n```\n\n"
+                "Respond ONLY with a JSON array of issues. Each issue must have:\n"
+                '  {"type": "<issue_type>", "severity": "low"|"medium"|"high"|"critical", '
+                '"description": "<explanation>", "line": <line_number_or_null>, '
+                '"suggestion": "<how_to_fix>"}\n'
+                "If there are no issues, return an empty array: []"
+            )
+
+            messages = [{"role": "user", "content": prompt}]
+            text, _metadata = await self.llm_router.call_llm(
+                provider=provider,
+                messages=messages,
+                task_type=LLMTaskType.CODE_GENERATION,
+                max_tokens=2048,
+            )
+
+            return self._parse_review_response(text, concern)
+        except Exception:
+            logger.exception("LLM %s review failed", concern)
+            return []
+
+    @staticmethod
+    def _parse_review_response(text: str, concern: str) -> List[Dict[str, Any]]:
+        """Parse a JSON array of issues from the LLM response text."""
+        import json as _json
+
+        # Strip markdown fences if present
+        cleaned = text.strip()
+        if cleaned.startswith("```"):
+            lines = cleaned.split("\n")
+            lines = lines[1:]  # drop opening fence
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned = "\n".join(lines).strip()
+
+        try:
+            issues = _json.loads(cleaned)
+        except _json.JSONDecodeError:
+            return []
+
+        if not isinstance(issues, list):
+            return []
+
+        valid = []
+        for item in issues:
+            if not isinstance(item, dict):
+                continue
+            valid.append({
+                "type": item.get("type", concern),
+                "severity": item.get("severity", "medium"),
+                "description": item.get("description", ""),
+                "line": item.get("line"),
+                "suggestion": item.get("suggestion", ""),
+            })
+        return valid
 
     def _generate_review_recommendations(
         self,
@@ -1545,6 +2469,24 @@ class UnifiedOrchestrator:
         self._record_event("workflow_progress")
         await self._apply_cep_rules({"event_type": EventTriggerType.WORKFLOW_PROGRESS, **data})
 
+        # Emit notifications for terminal workflow events
+        phase = data.get("phase")
+        if phase in ("completed", "failed") and self._notification_service is not None:
+            wf_name = data.get("workflow_name", "unknown")
+            exec_id = data.get("execution_id", "")
+            severity = Severity.INFO if phase == "completed" else Severity.ERROR
+            notif = self._notification_service.create_notification(
+                title=f"Workflow '{wf_name}' {phase}",
+                body=(
+                    f"Execution {exec_id} {phase}."
+                    + (f" Error: {data.get('error', 'unknown')}" if phase == "failed" else "")
+                ),
+                severity=severity,
+                source="orchestrator",
+                metadata={"execution_id": exec_id, "workflow_name": wf_name, "phase": phase},
+            )
+            await self._notification_service.send(notif)
+
     async def _handle_generation_failed(self, event: Any) -> None:
         data = self._extract_event_data(event)
         self._record_event("generation_failed")
@@ -1559,6 +2501,32 @@ class UnifiedOrchestrator:
         data = self._extract_event_data(event)
         self._record_event("task_completed")
         await self._apply_cep_rules({"event_type": EventTriggerType.TASK_COMPLETED, **data})
+        # Trigger dependency dispatch for tasks that completed via execute_task directly
+        task_id = data.get("task_id")
+        if not task_id:
+            return
+
+        if self._use_rust_scheduler:
+            # Rust scheduler: query task state via bridge, mark completed if running
+            state_str = await self._rust_bridge.scheduler_task_state(task_id)
+            if state_str and state_str.lower() == "running":
+                newly_ready = await self._rust_bridge.scheduler_mark_completed(task_id)
+                task = self.tasks.get(task_id)
+                if task:
+                    self._completed_tasks[task_id] = task
+                if newly_ready:
+                    await self._dispatch_ready_tasks()
+        else:
+            if self._dep_resolver.get_task_state(task_id) == DepTaskState.RUNNING:
+                try:
+                    newly_ready = self._dep_resolver.mark_completed(task_id)
+                    task = self.tasks.get(task_id)
+                    if task:
+                        self._completed_tasks[task_id] = task
+                    if newly_ready:
+                        await self._dispatch_ready_tasks()
+                except ValueError:
+                    pass  # Task not in expected state — already handled elsewhere
 
     async def _handle_preference_logged(self, event: Any) -> None:
         data = self._extract_event_data(event)
@@ -1774,6 +2742,51 @@ class UnifiedOrchestrator:
                 self.metrics = metrics
                 logger.info("Loaded orchestrator metrics")
 
+            # Load dependency resolver state
+            dep_data = await self.memory_store.retrieve("orchestrator:dep_resolver")
+            if dep_data and isinstance(dep_data, dict):
+                self._dep_resolver = DependencyResolver.from_dict(dep_data)
+                logger.info("Loaded dependency resolver state")
+
+            # Load completed tasks history
+            completed = await self.memory_store.retrieve("orchestrator:completed_tasks")
+            if completed and isinstance(completed, dict):
+                logger.info(f"Loaded {len(completed)} completed task records")
+
+            # Load execution tracker
+            tracker_data = await self.memory_store.retrieve("orchestrator:exec_tracker")
+            if tracker_data and isinstance(tracker_data, dict):
+                self._exec_tracker = ExecutionTracker.from_dict(tracker_data)
+                logger.info("Loaded execution tracker profiles")
+
+            # Load quality gate policy
+            gate_data = await self.memory_store.retrieve("orchestrator:quality_policy")
+            if gate_data and isinstance(gate_data, dict):
+                self._quality_policy = QualityGatePolicy.from_dict(gate_data)
+                logger.info("Loaded quality gate policy")
+
+            # Load retry manager
+            retry_data = await self.memory_store.retrieve("orchestrator:retry_manager")
+            if retry_data and isinstance(retry_data, dict):
+                self._retry_manager = RetryManager.from_dict(retry_data)
+                logger.info("Loaded retry manager state")
+
+            # Load scheduler coordinator
+            coord_data = await self.memory_store.retrieve("orchestrator:scheduler_coord")
+            if coord_data and isinstance(coord_data, dict):
+                self._scheduler = SchedulerCoordinator.from_dict(
+                    coord_data,
+                    self._dep_resolver, self._exec_tracker,
+                    self._quality_policy, self._retry_manager,
+                )
+                logger.info("Loaded scheduler coordinator state")
+
+            # Load stored workflow definitions
+            wf_defs = await self.memory_store.retrieve("orchestrator:stored_workflows")
+            if wf_defs and isinstance(wf_defs, dict):
+                self._stored_workflows = wf_defs
+                logger.info("Loaded %d stored workflow definitions", len(wf_defs))
+
         except Exception as e:
             logger.warning(f"Failed to load state: {e}")
 
@@ -1796,6 +2809,49 @@ class UnifiedOrchestrator:
 
             # Persist metrics
             await self.memory_store.store("orchestrator:metrics", self.metrics)
+
+            # Persist dependency resolver state
+            await self.memory_store.store(
+                "orchestrator:dep_resolver",
+                self._dep_resolver.to_dict(),
+            )
+
+            # Persist recent completed tasks (capped at 1000)
+            recent = dict(list(self._completed_tasks.items())[-1000:])
+            await self.memory_store.store(
+                "orchestrator:completed_tasks",
+                {tid: asdict(t) for tid, t in recent.items()},
+            )
+
+            # Persist execution tracker (profiles only — records are transient)
+            await self.memory_store.store(
+                "orchestrator:exec_tracker",
+                self._exec_tracker.to_dict(),
+            )
+
+            # Persist quality gate policy
+            await self.memory_store.store(
+                "orchestrator:quality_policy",
+                self._quality_policy.to_dict(),
+            )
+
+            # Persist retry manager
+            await self.memory_store.store(
+                "orchestrator:retry_manager",
+                self._retry_manager.to_dict(),
+            )
+
+            # Persist scheduler coordinator
+            await self.memory_store.store(
+                "orchestrator:scheduler_coord",
+                self._scheduler.to_dict(),
+            )
+
+            # Persist stored workflow definitions
+            await self.memory_store.store(
+                "orchestrator:stored_workflows",
+                self._stored_workflows,
+            )
 
             logger.info("Persisted orchestrator state")
 
@@ -2004,7 +3060,12 @@ class UnifiedOrchestrator:
                 logger.error(f"Error in task monitor: {e}", exc_info=True)
 
     async def _process_queues(self) -> None:
-        """Background task to process queued tasks."""
+        """Background task to process queued tasks.
+
+        Tasks with dependencies are routed through submit_task() for
+        DAG-aware scheduling.  Tasks without dependencies execute directly
+        (backward-compatible behaviour).
+        """
         while self.is_running:
             try:
                 # Process queues in priority order
@@ -2019,7 +3080,10 @@ class UnifiedOrchestrator:
                         task_id = queue.pop(0)
                         if task_id in self.tasks:
                             task = self.tasks[task_id]
-                            asyncio.create_task(self.execute_task(task))
+                            if task.dependencies:
+                                asyncio.create_task(self.submit_task(task))
+                            else:
+                                asyncio.create_task(self.execute_task(task))
 
                 await asyncio.sleep(1.0)  # Check every second
 
@@ -2057,6 +3121,9 @@ def create_orchestrator(
     memory_store: IMemoryStore,
     llm_router: Optional[ILLMRouter] = None,
     tool_selector: Optional[IToolSelector] = None,
+    rust_bridge: Optional[Any] = None,
+    notification_service: Optional[NotificationService] = None,
+    resource_manager: Optional[ResourceManager] = None,
 ) -> UnifiedOrchestrator:
     """Create and initialize a UnifiedOrchestrator instance.
 
@@ -2065,13 +3132,20 @@ def create_orchestrator(
         memory_store: Persistent storage for state
         llm_router: Optional LLM routing
         tool_selector: Optional tool selection
+        rust_bridge: Optional RustCoreBridge for Rust-delegated scheduling
+        notification_service: Optional notification service for workflow events
+        resource_manager: Optional production safety layer (concurrency + budget + breakers)
 
     Returns:
         Configured UnifiedOrchestrator instance
     """
-    return UnifiedOrchestrator(
+    orch = UnifiedOrchestrator(
         event_bus=event_bus,
         memory_store=memory_store,
         llm_router=llm_router,
         tool_selector=tool_selector,
+        rust_bridge=rust_bridge,
     )
+    orch._notification_service = notification_service
+    orch._resource_manager = resource_manager
+    return orch

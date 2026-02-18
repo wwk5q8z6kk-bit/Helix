@@ -226,8 +226,14 @@ impl MultiModalPipeline {
 }
 
 pub mod audio;
+pub mod code;
+pub mod csv_excel;
+pub mod docx;
+pub mod epub;
+pub mod html;
 pub mod image;
 pub mod pdf;
+pub mod structured_data;
 
 #[cfg(test)]
 mod tests {

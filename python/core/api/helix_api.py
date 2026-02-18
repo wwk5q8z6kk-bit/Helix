@@ -58,6 +58,13 @@ class EventRequest(BaseModel):
     data: Dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkflowDefRequest(BaseModel):
+    name: str
+    tasks: list
+    deadline: Optional[float] = None
+    budget: Optional[float] = None
+
+
 class SearchRequest(BaseModel):
     query: str
     limit: int = Field(default=10, ge=1, le=100)
@@ -124,9 +131,11 @@ app.add_middleware(
 # Middleware stack
 from core.middleware.request_id import RequestIDMiddleware
 from core.middleware.security import SecurityHeadersMiddleware
+from core.middleware.rate_limiter import RateLimitMiddleware
 
 app.add_middleware(RequestIDMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RateLimitMiddleware)
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +438,23 @@ async def swarm_execute(req: SwarmRequest):
         raise HTTPException(status_code=502, detail=str(e))
 
 
+@app.get("/api/budget")
+async def budget_dashboard():
+    """Get budget and cost tracking dashboard."""
+    container = get_container()
+    return container.budget_tracker.get_dashboard()
+
+
+@app.get("/api/resources")
+async def get_resource_status():
+    """Resource manager dashboard — concurrency, budget, circuit breakers."""
+    container = get_container()
+    orch = container.orchestrator
+    if orch is None or orch._resource_manager is None:
+        return {"status": "not_configured"}
+    return orch._resource_manager.stats
+
+
 class FeedbackRequest(BaseModel):
     task_id: str
     score: float = Field(ge=0.0, le=1.0)
@@ -447,3 +473,505 @@ async def submit_feedback(req: FeedbackRequest):
         feedback=req.feedback,
         agent_id=req.agent_id,
     )
+
+
+# ---------------------------------------------------------------------------
+# Composio integration endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/composio/tools")
+async def composio_tools(category: Optional[str] = None):
+    """List available Composio tools."""
+    container = get_container()
+    bridge = container.composio_bridge
+    try:
+        tools = await bridge.discover_tools(category=category)
+        return {"tools": tools, "tool_mode": bridge.tool_mode.value}
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+class ComposioExecuteRequest(BaseModel):
+    tool_name: str
+    params: Dict[str, Any] = Field(default_factory=dict)
+    entity_id: str = "default"
+
+
+@app.post("/api/composio/execute")
+async def composio_execute(req: ComposioExecuteRequest):
+    """Execute a Composio tool."""
+    container = get_container()
+    bridge = container.composio_bridge
+    try:
+        result = await bridge.execute_tool(
+            tool_name=req.tool_name,
+            params=req.params,
+            entity_id=req.entity_id,
+        )
+        if not result.get("success"):
+            raise HTTPException(status_code=502, detail=result.get("error", "Tool execution failed"))
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.get("/api/composio/oauth/{app_name}")
+async def composio_oauth(app_name: str, redirect_url: str = ""):
+    """Initiate OAuth flow for a Composio app."""
+    container = get_container()
+    bridge = container.composio_bridge
+    try:
+        result = await bridge.initiate_oauth(app_name=app_name, redirect_url=redirect_url)
+        if not result.get("success"):
+            raise HTTPException(status_code=502, detail=result.get("error", "OAuth initiation failed"))
+        return result
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Reports endpoints (Phase 15)
+# ---------------------------------------------------------------------------
+
+
+class ReportRequest(BaseModel):
+    report_type: str = "summary"
+    context: Dict[str, Any] = Field(default_factory=dict)
+
+
+@app.get("/api/analytics/dashboard")
+async def analytics_dashboard():
+    """Aggregated system analytics dashboard."""
+    container = get_container()
+    dashboard = await container.analytics_engine.get_dashboard()
+    return {
+        "total_requests": dashboard.total_requests,
+        "total_tokens": dashboard.total_tokens,
+        "total_cost": dashboard.total_cost,
+        "active_providers": dashboard.active_providers,
+        "requests_today": dashboard.requests_today,
+        "top_providers": [
+            {
+                "provider": p.provider,
+                "total_requests": p.total_requests,
+                "avg_latency_ms": p.avg_latency_ms,
+                "error_rate": p.error_rate,
+                "total_cost": p.total_cost,
+            }
+            for p in dashboard.top_providers
+        ],
+    }
+
+
+@app.get("/api/analytics/trends")
+async def analytics_trends(period: str = "daily", days: int = 30):
+    """Token usage and cost trends over time."""
+    container = get_container()
+    trends = await container.analytics_engine.get_trends(period=period, days=days)
+    return {"period": trends.period, "data_points": trends.data_points, "summary": trends.summary}
+
+
+@app.get("/api/analytics/providers")
+async def analytics_providers():
+    """Per-provider performance breakdown."""
+    container = get_container()
+    providers = await container.analytics_engine.get_provider_performance()
+    return {
+        "providers": [
+            {
+                "provider": p.provider,
+                "total_requests": p.total_requests,
+                "avg_latency_ms": p.avg_latency_ms,
+                "error_rate": p.error_rate,
+                "total_tokens": p.total_tokens,
+                "total_cost": p.total_cost,
+            }
+            for p in providers
+        ]
+    }
+
+
+@app.get("/api/analytics/token-usage")
+async def analytics_token_usage(provider: Optional[str] = None):
+    """Detailed token usage log."""
+    container = get_container()
+    usage = await container.analytics_engine.get_token_usage(provider=provider)
+    return {
+        "usage": [
+            {
+                "provider": u.provider,
+                "model": u.model,
+                "tokens_in": u.tokens_in,
+                "tokens_out": u.tokens_out,
+                "cost": u.cost,
+                "timestamp": u.timestamp.isoformat(),
+            }
+            for u in usage[-100:]
+        ]
+    }
+
+
+@app.post("/api/reports/generate")
+async def generate_report(req: ReportRequest):
+    """Generate an analytical report."""
+    container = get_container()
+    report = await container.report_generator.generate(
+        report_type=req.report_type,
+        context=req.context,
+    )
+    return {
+        "id": report.id,
+        "title": report.title,
+        "content": report.content,
+        "report_type": report.report_type,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+@app.get("/api/reports/{report_id}")
+async def get_report(report_id: str):
+    """Retrieve a previously generated report."""
+    container = get_container()
+    report = await container.report_generator.get(report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+    return {
+        "id": report.id,
+        "title": report.title,
+        "content": report.content,
+        "report_type": report.report_type,
+        "created_at": report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Scheduling endpoints (Rust-first DAG scheduler)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/scheduler/workflows")
+async def define_workflow(req: WorkflowDefRequest):
+    """Define a DAG workflow in the scheduler."""
+    container = get_container()
+    result = await container.orchestrator.define_workflow(
+        name=req.name, tasks=req.tasks,
+        deadline=req.deadline, budget=req.budget,
+    )
+    if result is None:
+        raise HTTPException(status_code=400, detail="Failed to define workflow")
+    return result
+
+
+@app.get("/api/scheduler/workflows")
+async def list_workflows():
+    """List all stored workflow definitions."""
+    container = get_container()
+    return await container.orchestrator.list_workflows()
+
+
+@app.get("/api/scheduler/workflows/{name}")
+async def get_workflow(name: str):
+    """Get a workflow definition by name."""
+    container = get_container()
+    result = await container.orchestrator.get_workflow(name)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    return result
+
+
+@app.delete("/api/scheduler/workflows/{name}")
+async def delete_workflow(name: str):
+    """Delete a stored workflow."""
+    container = get_container()
+    deleted = await container.orchestrator.delete_workflow(name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    return {"status": "deleted", "name": name}
+
+
+@app.post("/api/scheduler/workflows/{name}/preview")
+async def preview_workflow(name: str):
+    """Get predictive preview of a stored workflow."""
+    container = get_container()
+    result = await container.orchestrator.preview_workflow(name)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Workflow '{name}' not found")
+    return result
+
+
+@app.get("/api/scheduler/templates")
+async def list_templates():
+    """List pre-built workflow template names."""
+    container = get_container()
+    return {"templates": await container.orchestrator.list_workflow_templates()}
+
+
+@app.post("/api/scheduler/templates/{name}/preview")
+async def preview_template(name: str):
+    """Preview a pre-built workflow template."""
+    container = get_container()
+    result = await container.orchestrator.preview_template(name)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Template '{name}' not found")
+    return result
+
+
+@app.get("/api/scheduler/stats")
+async def scheduler_stats():
+    """Get scheduler statistics."""
+    container = get_container()
+    return await container.orchestrator.scheduler_stats()
+
+
+@app.get("/api/scheduler/waves")
+async def scheduler_waves():
+    """Get execution waves (parallel groups in topological order)."""
+    container = get_container()
+    return {"waves": await container.orchestrator.execution_waves()}
+
+
+# ---------------------------------------------------------------------------
+# Workflow Execution endpoints
+# ---------------------------------------------------------------------------
+
+
+class WorkflowRunRequest(BaseModel):
+    context: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/scheduler/workflows/{name}/run")
+async def run_workflow(name: str, req: WorkflowRunRequest = WorkflowRunRequest()):
+    """Execute a stored workflow."""
+    container = get_container()
+    try:
+        wf_exec = await container.orchestrator.run_workflow(name, context=req.context)
+        return wf_exec.to_dict()
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+@app.get("/api/scheduler/executions")
+async def list_executions(status: Optional[str] = None, limit: int = 50):
+    """List workflow executions."""
+    container = get_container()
+    return container.orchestrator.list_workflow_executions(status=status, limit=limit)
+
+
+@app.get("/api/scheduler/executions/{execution_id}")
+async def get_execution(execution_id: str):
+    """Get a workflow execution by ID."""
+    container = get_container()
+    result = container.orchestrator.get_workflow_execution(execution_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found")
+    return result
+
+
+@app.post("/api/scheduler/executions/{execution_id}/cancel")
+async def cancel_execution(execution_id: str):
+    """Cancel a running workflow execution."""
+    container = get_container()
+    cancelled = await container.orchestrator.cancel_workflow_execution(execution_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not running")
+    return {"status": "cancelled", "execution_id": execution_id}
+
+
+@app.get("/api/scheduler/executions/{execution_id}/progress")
+async def stream_execution_progress(execution_id: str):
+    """Stream workflow execution progress as Server-Sent Events.
+
+    Emits events:
+      - "progress": incremental updates with percent, completed/total tasks
+      - "completed"/"failed": terminal event with full execution summary
+      - "ping": keepalive every 30s
+    """
+    container = get_container()
+
+    # Verify execution exists
+    wf_exec = container.orchestrator.get_workflow_execution(execution_id)
+    if wf_exec is None:
+        raise HTTPException(status_code=404, detail=f"Execution '{execution_id}' not found")
+
+    # If already finished, return final state as a single event
+    if isinstance(wf_exec, dict) and wf_exec.get("status") in ("completed", "failed", "cancelled"):
+        async def done_generator():
+            yield {"event": wf_exec["status"], "data": json.dumps(wf_exec)}
+        return EventSourceResponse(done_generator())
+
+    progress_queue: asyncio.Queue = asyncio.Queue()
+
+    async def on_progress(data):
+        if data.get("execution_id") == execution_id:
+            await progress_queue.put(data)
+
+    sub_id = await container.event_bus.subscribe(EventType.WORKFLOW_PROGRESS, on_progress)
+
+    async def event_generator():
+        try:
+            while True:
+                try:
+                    data = await asyncio.wait_for(progress_queue.get(), timeout=30.0)
+                    phase = data.get("phase", "progress")
+                    yield {"event": phase, "data": json.dumps(data)}
+                    if phase in ("completed", "failed"):
+                        break
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": ""}
+        finally:
+            await container.event_bus.unsubscribe(sub_id)
+
+    return EventSourceResponse(event_generator())
+
+
+# --- Source Connectors (delegated to Rust core) ---
+
+
+class SourceRegistrationRequest(BaseModel):
+    type: str
+    name: str
+    settings: Dict[str, str] = Field(default_factory=dict)
+
+
+@app.get("/api/sources")
+async def list_sources():
+    """List registered source connectors (via Rust core)."""
+    container = get_container()
+    try:
+        return {"sources": await container.bridge.list_sources()}
+    except Exception as e:
+        logger.error("Failed to list sources: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/sources")
+async def register_source(req: SourceRegistrationRequest):
+    """Register a new source connector (via Rust core)."""
+    container = get_container()
+    try:
+        result = await container.bridge.register_source(
+            source_type=req.type, name=req.name, settings=req.settings,
+        )
+        if result is None:
+            raise HTTPException(status_code=400, detail="Failed to register source")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to register source: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.get("/api/sources/{source_id}")
+async def get_source_status(source_id: str):
+    """Get a source connector's status (via Rust core)."""
+    container = get_container()
+    try:
+        result = await container.bridge.get_source_status(source_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to get source status: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.delete("/api/sources/{source_id}")
+async def remove_source(source_id: str):
+    """Remove a source connector (via Rust core)."""
+    container = get_container()
+    try:
+        removed = await container.bridge.remove_source(source_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Source not found")
+        return {"status": "removed", "source_id": source_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Failed to remove source: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+@app.post("/api/sources/{source_id}/poll")
+async def poll_source(source_id: str):
+    """Trigger a poll on a source connector (via Rust core)."""
+    container = get_container()
+    try:
+        documents = await container.bridge.poll_source(source_id)
+        return {"source_id": source_id, "documents": documents}
+    except Exception as e:
+        logger.error("Failed to poll source: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
+
+
+# --- Notifications ---
+
+
+@app.get("/api/notifications")
+async def list_notifications(
+    severity: Optional[str] = None,
+    unread_only: bool = False,
+    limit: int = 50,
+):
+    """List AI-layer notifications (workflow events, quality alerts)."""
+    container = get_container()
+    svc = container.notification_service
+    from core.notifications.notification_service import Severity as Sev
+
+    sev = None
+    if severity:
+        try:
+            sev = Sev(severity)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid severity: {severity}")
+
+    items = await svc.list(severity=sev, read=False if unread_only else None, limit=limit)
+    return {
+        "notifications": [
+            {
+                "id": n.id,
+                "title": n.title,
+                "body": n.body,
+                "severity": n.severity.value,
+                "source": n.source,
+                "metadata": n.metadata,
+                "created_at": n.created_at.isoformat() if n.created_at else None,
+                "read": n.read,
+            }
+            for n in items
+        ],
+        "total": await svc.count(),
+        "unread": await svc.count_unread(),
+    }
+
+
+@app.get("/api/notifications/{notification_id}")
+async def get_notification(notification_id: str):
+    """Get a single notification by ID."""
+    container = get_container()
+    n = await container.notification_service.get(notification_id)
+    if n is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {
+        "id": n.id,
+        "title": n.title,
+        "body": n.body,
+        "severity": n.severity.value,
+        "source": n.source,
+        "metadata": n.metadata,
+        "created_at": n.created_at.isoformat() if n.created_at else None,
+        "read": n.read,
+    }
+
+
+@app.post("/api/notifications/{notification_id}/read")
+async def mark_notification_read(notification_id: str):
+    """Mark a notification as read."""
+    container = get_container()
+    found = await container.notification_service.mark_read(notification_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    return {"status": "read", "notification_id": notification_id}
