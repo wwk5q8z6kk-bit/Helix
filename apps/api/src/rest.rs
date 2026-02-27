@@ -13797,7 +13797,7 @@ mod tests {
             .expect("time block should store");
         state
             .engine
-            .add_relationship(Relationship::new(
+            .add_relationship(&Relationship::new(
                 time_block.id,
                 task.id,
                 RelationKind::References,
@@ -14186,7 +14186,7 @@ mod tests {
             .expect("to task should store");
         state
             .engine
-            .add_relationship(Relationship::new(from.id, to.id, RelationKind::DependsOn))
+            .add_relationship(&Relationship::new(from.id, to.id, RelationKind::DependsOn))
             .await
             .expect("relationship should store");
 
@@ -14282,12 +14282,12 @@ mod tests {
         );
         state
             .engine
-            .add_relationship(references)
+            .add_relationship(&references)
             .await
             .expect("outgoing relationship should store");
         state
             .engine
-            .add_relationship(Relationship::new(
+            .add_relationship(&Relationship::new(
                 inbound_source.id,
                 center.id,
                 RelationKind::DependsOn,
@@ -14357,13 +14357,13 @@ mod tests {
         );
         state
             .engine
-            .add_relationship(auto_ref)
+            .add_relationship(&auto_ref)
             .await
             .expect("auto reference should store");
 
         state
             .engine
-            .add_relationship(Relationship::new(
+            .add_relationship(&Relationship::new(
                 manual_source.id,
                 center.id,
                 RelationKind::References,
@@ -14373,7 +14373,7 @@ mod tests {
 
         state
             .engine
-            .add_relationship(Relationship::new(
+            .add_relationship(&Relationship::new(
                 non_reference_source.id,
                 center.id,
                 RelationKind::DependsOn,

@@ -2,6 +2,8 @@
 .DS_Store
 
 # Rust
+target/
+target-*/
 rust/target/
 rust/target-*/
 

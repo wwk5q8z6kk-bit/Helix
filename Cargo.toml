@@ -1,16 +1,16 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/hx-core",
-    "crates/hx-storage",
-    "crates/hx-index",
-    "crates/hx-graph",
-    "crates/hx-engine",
-    "crates/hx-server",
-    "crates/hx-mcp",
-    "crates/hx-cli",
-    "crates/hx-plugin",
-    "crates/hx-scheduler",
+    "packages/core",
+    "packages/memory/storage",
+    "packages/memory/index",
+    "packages/graph",
+    "packages/engine/engine",
+    "apps/api",
+    "packages/mcp",
+    "apps/cli",
+    "packages/plugins",
+    "packages/engine/scheduler",
 ]
 
 [workspace.package]
@@ -26,15 +26,15 @@ keywords = ["knowledge-graph", "memory", "local-first", "ai", "platform"]
 
 [workspace.dependencies]
 # Internal crates
-hx-core = { path = "crates/hx-core" }
-hx-storage = { path = "crates/hx-storage" }
-hx-index = { path = "crates/hx-index" }
-hx-graph = { path = "crates/hx-graph" }
-hx-engine = { path = "crates/hx-engine" }
-hx-server = { path = "crates/hx-server" }
-hx-mcp = { path = "crates/hx-mcp" }
-hx-plugin = { path = "crates/hx-plugin" }
-hx-scheduler = { path = "crates/hx-scheduler" }
+hx-core = { path = "packages/core" }
+hx-storage = { path = "packages/memory/storage" }
+hx-index = { path = "packages/memory/index" }
+hx-graph = { path = "packages/graph" }
+hx-engine = { path = "packages/engine/engine" }
+hx-server = { path = "apps/api" }
+hx-mcp = { path = "packages/mcp" }
+hx-plugin = { path = "packages/plugins" }
+hx-scheduler = { path = "packages/engine/scheduler" }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }

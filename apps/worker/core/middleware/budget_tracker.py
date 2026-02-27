@@ -35,12 +35,16 @@ class UsageRecord:
 
 
 class BudgetTracker:
-    def __init__(self, daily_budget: float = 100.0, default_action: str = "downgrade"):
+    def __init__(self, daily_budget: float = 100.0, default_action: str = "downgrade", storage_path: str = "~/.helix/budget.json"):
         self._lock = threading.Lock()
         self.daily_budget = daily_budget
         self.default_action = BudgetAction(default_action)
         self._today: date = datetime.now(tz=timezone.utc).date()
-        self._daily_spend: Dict[str, float] = {}
+
+        from core.middleware.budget_storage import PersistentBudgetStore
+        self._store = PersistentBudgetStore(storage_path)
+        self._daily_spend: Dict[str, float] = self._store.load()
+
         self._usage_history: List[UsageRecord] = []
         self._provider_configs: Dict[str, ProviderCostConfig] = {}
         self._initialize_default_costs()
@@ -125,6 +129,7 @@ class BudgetTracker:
             self._check_date_reset()
             self._daily_spend[provider] = self._daily_spend.get(provider, 0.0) + cost
             self._usage_history.append(record)
+            self._store.save(self._daily_spend)
         logger.debug("Recorded usage: provider=%s cost=%.6f", provider, cost)
         return record
 
