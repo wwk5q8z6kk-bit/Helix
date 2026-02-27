@@ -35,3 +35,11 @@ python/**/*.egg-info/
 
 # Model cache
 .fastembed_cache/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
