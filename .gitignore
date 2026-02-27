@@ -21,6 +21,9 @@ python/**/*.egg-info/
 *.swp
 *.swo
 
+# Claude Code (per-developer)
+.claude/
+
 # Environment
 .env
 .env.*

@@ -6,54 +6,48 @@ Dual-layer AI platform: Rust core (storage, search, graph, credentials, tunnels,
 
 ```
 helix/
-├── rust/crates/         # 9 Rust crates (workspace)
-│   ├── hx-core          # Domain types, credentials (keyring + encrypted file), pairing model
-│   ├── hx-storage       # SQLite + LanceDB vector storage, cached embedder
-│   ├── hx-index         # Tantivy full-text search
-│   ├── hx-graph         # petgraph knowledge graph
-│   ├── hx-engine        # Orchestrates core subsystems (adapters, tunnels, channels, heartbeat, jobs, workflows, notifications, sources, multimodal ingestion)
-│   ├── hx-scheduler     # DAG-based task scheduling, workflow builder, quality gates
-│   ├── hx-server        # axum REST + tonic gRPC + UDS + gateway pairing
-│   ├── hx-cli           # CLI binary (setup wizard, chat, keychain, mcp)
-│   ├── hx-adapters      # External integrations
-│   └── hx-proto         # Protobuf definitions
-└── python/              # Python AI layer
-    ├── core/
-    │   ├── api/
-    │   │   ├── helix_api.py              # FastAPI app (:8200)
-    │   │   └── event_router.py           # External event classification + routing
-    │   ├── llm/intelligent_llm_router.py  # 20-provider LLM router
-    │   ├── rust_bridge.py            # HTTP client to Rust core (:9470)
-    │   ├── di_container.py           # Lazy DI wiring
-    │   ├── event_bus.py              # In-memory pub/sub
-    │   ├── orchestration/            # Task orchestrator (wired to real LLM)
-    │   ├── swarms/                   # Collaborative agent swarms
-    │   ├── reasoning/                # Multi-step reasoning + PRM
-    │   ├── learning/                 # RL feedback + optimizer
-    │   ├── feedback/                 # Quality feedback handler
-    │   ├── observability/            # Tower structured logging (JSONL)
-    │   ├── mcp/                      # MCP stdio server (9 tools + Composio)
-    │   ├── middleware/               # Request ID, rate limiting, security, budget tracker
-    │   ├── composio/                 # Composio tool integration bridge
-    │   ├── analytics/                # Analytics engine, report generator, scheduled actions
-    │   ├── notifications/            # Notification service (Python-side)
-    │   └── sources/                  # Source connector protocol (Python-side)
-    ├── tests/                        # pytest
-    └── scripts/                      # start.sh, stop.sh
+├── apps/
+│   ├── api/             # axum REST + tonic gRPC + WebSocket server (hx-server)
+│   ├── cli/             # CLI binary: setup wizard, chat, keychain, MCP (hx-cli)
+│   └── worker/          # Python AI layer (FastAPI :8200)
+│       └── core/
+│           ├── api/             # helix_api.py, event_router.py
+│           ├── llm/             # 20-provider LLM router
+│           ├── orchestration/   # Task orchestrator
+│           ├── swarms/          # Collaborative agent swarms
+│           ├── reasoning/       # Multi-step reasoning + PRM
+│           ├── mcp/             # MCP stdio server (9 tools + Composio)
+│           ├── middleware/      # Rate limiting, security, budget tracker
+│           └── analytics/       # Usage trends, reports
+├── packages/
+│   ├── core/            # Domain types, credentials (keyring + encrypted file)
+│   ├── engine/
+│   │   ├── engine/      # Orchestration (adapters, tunnels, jobs, workflows, notifications, multimodal)
+│   │   └── scheduler/   # DAG-based task scheduling, quality gates
+│   ├── graph/           # petgraph knowledge graph
+│   ├── mcp/             # MCP protocol + plugin system
+│   ├── memory/
+│   │   ├── storage/     # SQLite + LanceDB vector storage
+│   │   └── index/       # Tantivy full-text search
+│   └── plugins/         # WASM plugin runtime
+├── config/              # Default configuration (helix.toml)
+├── infra/               # Docker Compose
+├── migrations/          # SQLite schema migrations
+└── scripts/             # start.sh, stop.sh, health-check.sh
 ```
 
 ## Build & Run
 
 ### Rust
 ```bash
-cd rust && cargo build --release
+cargo build --release
 # Binary: target/release/hx
 # Requires: protoc (brew install protobuf)
 ```
 
 ### Python
 ```bash
-cd python
+cd apps/worker
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"
 pytest                    # All tests
@@ -65,26 +59,26 @@ python -m uvicorn core.api.helix_api:app --port 8200
 - Python API: 8200
 
 ## Key Entry Points
-- **Python API**: `python/core/api/helix_api.py` — FastAPI app
-- **LLM Router**: `python/core/llm/intelligent_llm_router.py` — routes to 20 providers (Claude, GPT, Gemini, Grok, DeepSeek, OpenRouter, Ollama, Mistral, Together, Fireworks, Perplexity, Cloudflare, Venice, Cohere, Bedrock, custom:URL)
-- **MCP Server**: `python/core/mcp/server.py` — stdio MCP with 9 tools (helix_schedule 13 actions, helix_notify 4 actions) + Composio
-- **Rust Bridge**: `python/core/rust_bridge.py` — async HTTP client to Rust core
-- **Orchestrator**: `python/core/orchestration/unified_orchestrator.py` — task decomposition + delegation (wired to LLM)
-- **DI Container**: `python/core/di_container.py` — lazy service wiring
-- **Event Router**: `python/core/api/event_router.py` — external event classification + routing
-- **Tower Log**: `python/core/observability/tower_log.py` — structured JSONL event logging
-- **Feedback Handler**: `python/core/feedback/feedback_handler.py` — quality feedback → learning optimizer
-- **Budget Tracker**: `python/core/middleware/budget_tracker.py` — per-provider cost tracking with daily caps
-- **Composio Bridge**: `python/core/composio/composio_bridge.py` — Composio tool discovery + execution
-- **Analytics Engine**: `python/core/analytics/analytics_engine.py` — token usage trends, provider performance, search quality metrics
-- **Report Generator**: `python/core/analytics/report_generator.py` — LLM-powered namespace summaries and trend reports
-- **Multimodal Pipeline**: `hx-engine/src/multimodal/mod.rs` — 9 processors (PDF, Image, Audio, DOCX, HTML, CSV/Excel, EPUB, Code, JSON/YAML)
-- **Source Connectors**: `hx-engine/src/sources/mod.rs` — SourceConnector trait + directory, RSS, GitHub, URL scraper
-- **Workflow Engine**: `hx-engine/src/workflow/mod.rs` — TOML/JSON workflow definitions with conditions, loops, parallelism
-- **Job Queue**: `hx-engine/src/jobs/queue.rs` — SQLite-backed durable queue with retry, dead-letter, priority
-- **Notification Router**: `hx-engine/src/notifications/router.rs` — multi-channel dispatch with alert rules, cooldown, quiet hours
-- **Rate Limiter**: `hx-engine/src/rate_limit.rs` — per-adapter rate limiting (requests/min, /hour, burst)
-- **Scheduling Service**: `hx-engine/src/scheduling.rs` — async facade over hx-scheduler DAG coordinator
+- **Python API**: `apps/worker/core/api/helix_api.py` — FastAPI app
+- **LLM Router**: `apps/worker/core/llm/intelligent_llm_router.py` — routes to 20 providers (Claude, GPT, Gemini, Grok, DeepSeek, OpenRouter, Ollama, Mistral, Together, Fireworks, Perplexity, Cloudflare, Venice, Cohere, Bedrock, custom:URL)
+- **MCP Server**: `apps/worker/core/mcp/server.py` — stdio MCP with 9 tools (helix_schedule 13 actions, helix_notify 4 actions) + Composio
+- **Rust Bridge**: `apps/worker/core/rust_bridge.py` — async HTTP client to Rust core
+- **Orchestrator**: `apps/worker/core/orchestration/unified_orchestrator.py` — task decomposition + delegation (wired to LLM)
+- **DI Container**: `apps/worker/core/di_container.py` — lazy service wiring
+- **Event Router**: `apps/worker/core/api/event_router.py` — external event classification + routing
+- **Tower Log**: `apps/worker/core/observability/tower_log.py` — structured JSONL event logging
+- **Feedback Handler**: `apps/worker/core/feedback/feedback_handler.py` — quality feedback → learning optimizer
+- **Budget Tracker**: `apps/worker/core/middleware/budget_tracker.py` — per-provider cost tracking with daily caps
+- **Composio Bridge**: `apps/worker/core/composio/composio_bridge.py` — Composio tool discovery + execution
+- **Analytics Engine**: `apps/worker/core/analytics/analytics_engine.py` — token usage trends, provider performance, search quality metrics
+- **Report Generator**: `apps/worker/core/analytics/report_generator.py` — LLM-powered namespace summaries and trend reports
+- **Multimodal Pipeline**: `packages/engine/engine/src/multimodal/mod.rs` — 9 processors (PDF, Image, Audio, DOCX, HTML, CSV/Excel, EPUB, Code, JSON/YAML)
+- **Source Connectors**: `packages/engine/engine/src/sources/mod.rs` — SourceConnector trait + directory, RSS, GitHub, URL scraper
+- **Workflow Engine**: `packages/engine/engine/src/workflow/mod.rs` — TOML/JSON workflow definitions with conditions, loops, parallelism
+- **Job Queue**: `packages/engine/engine/src/jobs/queue.rs` — SQLite-backed durable queue with retry, dead-letter, priority
+- **Notification Router**: `packages/engine/engine/src/notifications/router.rs` — multi-channel dispatch with alert rules, cooldown, quiet hours
+- **Rate Limiter**: `packages/engine/engine/src/rate_limit.rs` — per-adapter rate limiting (requests/min, /hour, burst)
+- **Scheduling Service**: `packages/engine/engine/src/scheduling.rs` — async facade over hx-scheduler DAG coordinator
 
 ## API Endpoints
 
@@ -181,7 +175,7 @@ hx mcp                       # Start MCP server on stdio
 
 ## Testing
 ```bash
-cd python && source .venv/bin/activate
+cd apps/worker && source .venv/bin/activate
 pytest -v                              # All tests
 pytest tests/test_helix_api.py         # API endpoint tests
 pytest tests/test_llm_router.py        # Router selection tests
@@ -203,11 +197,10 @@ pytest tests/test_rust_scheduler_integration.py  # Rust scheduler delegation tes
 ```
 
 ```bash
-cd rust
 cargo check                           # Full workspace check
-cargo test --lib -p hx-server         # Server tests
-cargo test --lib -p hx-engine         # Engine tests
-cargo test --lib -p hx-cli            # CLI tests
+cargo test --lib -p hx-server         # Server tests (apps/api)
+cargo test --lib -p hx-engine         # Engine tests (packages/engine/engine)
+cargo test --lib -p hx-cli            # CLI tests (apps/cli)
 ```
 
 ## Conventions
@@ -216,7 +209,7 @@ cargo test --lib -p hx-cli            # CLI tests
 - Magic bytes: `HXB1` (sealed blob prefix)
 - Exceptions: `core/exceptions_unified.py` (single hierarchy)
 - Interfaces: `core/interfaces/` (Protocol-based, structural subtyping)
-- Validation: `hx-server/src/validation.rs` uses typed `ValidationError` enum (thiserror)
+- Validation: `apps/api/src/validation.rs` uses typed `ValidationError` enum (thiserror)
 - Dependencies: `sse-starlette` for SSE streaming
 - Adapters: `ExternalAdapter` trait (send/poll/health_check/status)
 - Tunnels: `Tunnel` trait (start/stop/health_check/status) — child processes with `kill_on_drop`
@@ -226,14 +219,13 @@ cargo test --lib -p hx-cli            # CLI tests
 - Jobs: `JobQueue` backed by SQLite with exponential backoff (`min(5 * 2^retries, 3600)`)
 - Workflows: TOML/JSON definitions, variable interpolation `{{var.name}}` / `{{result.step.field}}`
 - Notifications: `NotificationChannel` trait, `AlertRule` conditions with cooldown + quiet hours
-- Config: `hx-engine/src/config.rs` — all config structs with `#[serde(default)]` for backward compat
+- Config: `packages/engine/engine/src/config.rs` — all config structs with `#[serde(default)]` for backward compat
 - Scheduling: Rust-first DAG scheduling — orchestrator delegates to Rust core via `RustCoreBridge` when available, falls back to Python `DependencyResolver` when offline
 
 ## Infrastructure
-- `scripts/start.sh` — starts Rust core + Python API
+- `scripts/start.sh` — starts Rust core + Python AI
 - `scripts/stop.sh` — stops both services
 - `.github/workflows/ci.yml` — Python pytest + Rust check/test
-- `docker-compose.yml` — helix-rust (:9470) + helix-python (:8200)
-- `rust/Dockerfile` — multi-stage Rust build (builder → slim runtime)
-- `python/Dockerfile` — Python 3.12-slim + uv for fast installs
+- `infra/docker-compose.yml` — helix-rust (:9470) + helix-python (:8200)
+- `apps/worker/Dockerfile` — Python 3.12-slim + uv for fast installs
 - `.env.example` — template for all environment variables

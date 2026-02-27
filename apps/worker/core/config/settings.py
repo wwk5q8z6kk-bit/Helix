@@ -124,7 +124,7 @@ class Settings(BaseSettings):
     health_check_interval: int = Field(default=30, ge=1, description="Health check interval in seconds")
 
     # Security
-    jwt_secret: str = Field(default="change-me", description="JWT secret key")
+    jwt_secret: str = Field(default="", description="JWT secret key (must be set via HELIX_JWT_SECRET env var)")
     jwt_algorithm: str = Field(default="HS256", description="JWT algorithm")
     jwt_expiration: int = Field(default=3600, ge=1, description="JWT expiration in seconds")
     encryption_key: Optional[str] = Field(default=None, description="Encryption key (base64)")

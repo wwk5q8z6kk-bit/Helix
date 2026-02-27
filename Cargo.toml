@@ -16,11 +16,11 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "Apache-2.0"
 authors = ["Helix Contributors"]
 description = "Helix — unified AI platform with Rust core and Python AI"
-homepage = "https://github.com/nicholasgasior/helix"
-repository = "https://github.com/nicholasgasior/helix"
+homepage = "https://github.com/wwk5q8z6kk-bit/Helix"
+repository = "https://github.com/wwk5q8z6kk-bit/Helix"
 categories = ["database", "command-line-utilities"]
 keywords = ["knowledge-graph", "memory", "local-first", "ai", "platform"]
 

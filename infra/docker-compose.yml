@@ -1,12 +1,12 @@
 services:
   helix-rust:
     build:
-      context: ./rust
+      context: ..
       dockerfile: Dockerfile
     ports:
       - "9470:9470"
       - "50051:50051"
-    env_file: .env
+    env_file: ../.env
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9470/health"]
@@ -15,11 +15,11 @@ services:
 
   helix-python:
     build:
-      context: ./python
+      context: ../apps/worker
       dockerfile: Dockerfile
     ports:
       - "8200:8200"
-    env_file: .env
+    env_file: ../.env
     restart: unless-stopped
     depends_on:
       helix-rust:

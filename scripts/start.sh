@@ -30,11 +30,11 @@ start_rust() {
     log "Starting Rust core on :$RUST_PORT..."
     if command -v hx &>/dev/null; then
         hx server start &>"$LOG_DIR/rust-core.log" &
-    elif [ -f "$HELIX_ROOT/rust/target/release/hx" ]; then
-        "$HELIX_ROOT/rust/target/release/hx" server start &>"$LOG_DIR/rust-core.log" &
+    elif [ -f "$HELIX_ROOT/target/release/hx" ]; then
+        "$HELIX_ROOT/target/release/hx" server start &>"$LOG_DIR/rust-core.log" &
     else
         log "WARNING: hx binary not found. Rust core not started."
-        log "Build with: cd $HELIX_ROOT/rust && cargo build --release -p hx-cli"
+        log "Build with: cd $HELIX_ROOT && cargo build --release -p hx-cli"
         return 1
     fi
     RUST_PID=$!
@@ -55,7 +55,7 @@ start_rust() {
 # --- Start Python AI ---
 start_python() {
     log "Starting Python AI on :$PYTHON_PORT..."
-    cd "$HELIX_ROOT/python"
+    cd "$HELIX_ROOT/apps/worker"
 
     if [ -d ".venv" ]; then
         source .venv/bin/activate
