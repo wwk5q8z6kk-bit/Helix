@@ -51,7 +51,7 @@ helix/
 ### Prerequisites
 
 - Rust toolchain (stable)
-- Python 3.11+ with [uv](https://github.com/astral-sh/uv)
+- Python 3.12+ with [uv](https://github.com/astral-sh/uv)
 - `protoc` (`brew install protobuf`)
 
 ### Build & Run
